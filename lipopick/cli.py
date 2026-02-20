@@ -54,6 +54,10 @@ def _add_pick_args(parser: argparse.ArgumentParser) -> None:
                         help="Pin a micrograph (name substring) in the summary figure")
     parser.add_argument("--dpi", type=int, default=300,
                         help="Figure DPI")
+    parser.add_argument("--log-scale", action="store_true", default=True,
+                        help="Log scale on histogram y-axis (default)")
+    parser.add_argument("--linear-scale", action="store_true",
+                        help="Linear scale on histogram y-axis")
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="Suppress progress output")
 
@@ -78,6 +82,7 @@ def _cfg_from_args(args: argparse.Namespace):
         write_histogram=args.histogram,
         figure_dpi=args.dpi,
         figure_formats=("png", "svg"),
+        log_scale=not args.linear_scale,
     )
 
 

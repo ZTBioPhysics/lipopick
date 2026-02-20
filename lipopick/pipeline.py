@@ -707,6 +707,7 @@ def _generate_batch_summary(
         outdir=outdir,
         dmin=cfg.dmin, dmax=cfg.dmax,
         pixel_size=cfg.pixel_size,
+        log_scale=cfg.log_scale,
         formats=cfg.figure_formats, dpi=cfg.figure_dpi,
     )
     plt_close()

@@ -244,6 +244,7 @@ def plot_batch_summary(
     dmin: float = 150.0,
     dmax: float = 500.0,
     pixel_size: float | None = None,
+    log_scale: bool = True,
     formats: Sequence[str] = ("png", "svg"),
     dpi: int = 300,
 ) -> plt.Figure:
@@ -304,7 +305,8 @@ def plot_batch_summary(
         bins = np.linspace(dmin_disp, dmax_disp, 40)
         ax_hist.hist(diameters, bins=bins, color="steelblue", edgecolor="white",
                      linewidth=0.5)
-        ax_hist.set_yscale("log")
+        if log_scale:
+            ax_hist.set_yscale("log")
         ax_hist.set_xlabel(f"Diameter ({unit})", fontsize=11)
         ax_hist.set_ylabel("Count", fontsize=11)
         ax_hist.set_xlim(dmin_disp, dmax_disp)

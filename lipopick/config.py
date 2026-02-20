@@ -111,6 +111,7 @@ class PickerConfig:
     write_histogram: bool = False
     figure_dpi: int = 300
     figure_formats: Tuple[str, ...] = ("png", "svg")
+    log_scale: bool = True
 
     # ------------------------------------------------------------------ #
     # Post-refinement filters
