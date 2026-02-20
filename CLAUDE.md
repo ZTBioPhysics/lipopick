@@ -6,11 +6,10 @@ lipoproteins (HDL/LDL/VLDL). Detects particles, returning one pick per particle 
 diameter estimate. No training data required — purely classical.
 
 ## Current Status
-Full 62-micrograph run complete with dmax=150: 10,568 picks, ~14.5 s/image, 51 PASS / 11 FLAGGED by QC.
-Picking quality on good micrographs is "nearly perfect" per user assessment. Figures display
-diameters in nm when pixel_size is set. All 42 unit tests pass. Package installable with
-CLI entry points (`lipopick`, `lipopick-bin`, `lipopick-mpi`) and per-bin STAR export with
-coordinate rescaling. MPI parallelization implemented for multi-node HPC clusters.
+MPI parallelization deployed and tested on HPC: 300 micrographs in ~110s with 16 ranks
+(50,600 picks, ~0.37 s/image). All 42 unit tests pass. Package installable with CLI entry
+points (`lipopick`, `lipopick-bin`, `lipopick-mpi`) and per-bin STAR export with coordinate
+rescaling.
 
 ## Architecture
 - `lipopick/config.py` — PickerConfig dataclass (all tunable parameters)
@@ -88,8 +87,8 @@ mpirun -np 32 lipopick-mpi -i /path/to/micrographs/ -o /path/to/outputs/ \
 - [x] ~~Capture large lipid-rich particles~~ — DoG fundamentally cannot detect; accepted as limitation
 - [x] Package for distribution (CLI entry points: `lipopick`, `lipopick-bin`)
 - [x] Per-bin STAR export with coordinate rescaling (picking → extraction pixel frame)
-- [x] MPI parallelization for HPC clusters (`lipopick-mpi` entry point)
-- [ ] Speed optimization (baseline: ~14.5 s/image with refinement at dmax=150)
+- [x] MPI parallelization for HPC clusters (`lipopick-mpi` entry point, tested: 300 mics in 110s with 16 ranks)
+- [ ] Speed optimization (baseline: ~14.5 s/image single-core, ~0.37 s/image with 16 MPI ranks)
 - [ ] Documentation (README, usage examples)
 
 ## Known Limitations
