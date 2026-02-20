@@ -88,6 +88,7 @@ mpirun -np 32 lipopick-mpi -i /path/to/micrographs/ -o /path/to/outputs/ \
 - [x] Package for distribution (CLI entry points: `lipopick`, `lipopick-bin`)
 - [x] Per-bin STAR export with coordinate rescaling (picking → extraction pixel frame)
 - [x] MPI parallelization for HPC clusters (`lipopick-mpi` entry point, tested: 300 mics in 110s with 16 ranks)
+- [ ] Multi-input directory support (allow multiple `-i` paths — denoised micrographs are spread across jobs)
 - [ ] Speed optimization (baseline: ~14.5 s/image single-core, ~0.37 s/image with 16 MPI ranks)
 - [ ] Documentation (README, usage examples)
 

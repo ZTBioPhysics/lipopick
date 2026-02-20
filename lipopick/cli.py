@@ -22,8 +22,8 @@ from pathlib import Path
 
 def _add_pick_args(parser: argparse.ArgumentParser) -> None:
     """Add picking-related arguments shared by ``lipopick`` and ``lipopick-mpi``."""
-    parser.add_argument("--input", "-i", type=str, required=True,
-                        help="Path to a single micrograph (.mrc/.tif) or a directory")
+    parser.add_argument("--input", "-i", type=str, nargs="+", required=True,
+                        help="Path(s) to micrograph(s) or directories (accepts multiple)")
     parser.add_argument("--outdir", "-o", type=str, required=True,
                         help="Output directory for picks, figures, and JSON")
     parser.add_argument("--dmin", type=float, default=150.0,
@@ -98,8 +98,9 @@ def pick_main(argv=None):
     args = p.parse_args(argv)
 
     from lipopick import process_micrograph, process_batch
+    from lipopick.io import list_micrographs
 
-    input_path = Path(args.input)
+    input_paths = [Path(p) for p in args.input]
     outdir = Path(args.outdir)
     cfg = _cfg_from_args(args)
 
@@ -107,18 +108,32 @@ def pick_main(argv=None):
     if verbose:
         print(f"lipopick  |  dmin={args.dmin}px  dmax={args.dmax}px"
               f"  beta={args.nms_beta}  refine={args.refine}")
-        print(f"  Input:  {input_path}")
+        for ip in input_paths:
+            print(f"  Input:  {ip}")
         print(f"  Output: {outdir}")
 
-    if input_path.is_dir():
-        results = process_batch(input_path, outdir, cfg=cfg, verbose=verbose,
-                                workers=args.workers, show_mic=args.show_mic)
-    elif input_path.is_file():
-        result = process_micrograph(input_path, outdir, cfg=cfg, verbose=verbose)
+    # Single file input
+    if len(input_paths) == 1 and input_paths[0].is_file():
+        result = process_micrograph(input_paths[0], outdir, cfg=cfg, verbose=verbose)
         results = [result]
     else:
-        print(f"ERROR: Input not found: {input_path}", file=sys.stderr)
-        sys.exit(1)
+        # Gather micrographs from all input directories/files
+        mic_paths = []
+        for ip in input_paths:
+            if ip.is_dir():
+                mic_paths.extend(list_micrographs(ip))
+            elif ip.is_file():
+                mic_paths.append(ip)
+            else:
+                print(f"ERROR: Input not found: {ip}", file=sys.stderr)
+                sys.exit(1)
+        if not mic_paths:
+            print("ERROR: No micrographs found in input path(s)", file=sys.stderr)
+            sys.exit(1)
+        if verbose:
+            print(f"  Found {len(mic_paths)} micrograph(s) across {len(input_paths)} input(s)")
+        results = process_batch(mic_paths, outdir, cfg=cfg, verbose=verbose,
+                                workers=args.workers, show_mic=args.show_mic)
 
     total = sum(r["n_picks"] for r in results)
     print(f"\nTotal picks: {total}")
@@ -139,25 +154,32 @@ def mpi_pick_main(argv=None):
     _add_pick_args(p)
     args = p.parse_args(argv)
 
-    input_path = Path(args.input)
-    if not input_path.is_dir():
-        print(f"ERROR: --input must be a directory for MPI mode (got: {input_path})",
-              file=sys.stderr)
-        sys.exit(1)
-
+    from lipopick.io import list_micrographs
     from lipopick.mpi import mpi_process_batch
+
+    input_paths = [Path(p) for p in args.input]
+    for ip in input_paths:
+        if not ip.is_dir():
+            print(f"ERROR: --input must be directories for MPI mode (got: {ip})",
+                  file=sys.stderr)
+            sys.exit(1)
+
+    # Gather micrographs from all input directories
+    mic_paths = []
+    for ip in input_paths:
+        mic_paths.extend(list_micrographs(ip))
+    mic_paths = sorted(set(mic_paths))
+
+    if not mic_paths:
+        print("ERROR: No micrographs found in input path(s)", file=sys.stderr)
+        sys.exit(1)
 
     outdir = Path(args.outdir)
     cfg = _cfg_from_args(args)
     verbose = not args.quiet
 
-    if verbose:
-        # Only rank 0 should print the banner — but we don't have rank info
-        # at this point.  mpi_process_batch handles rank-prefixed output.
-        pass
-
     results = mpi_process_batch(
-        input_path, outdir, cfg=cfg, verbose=verbose,
+        mic_paths, outdir, cfg=cfg, verbose=verbose,
         show_mic=args.show_mic,
     )
 

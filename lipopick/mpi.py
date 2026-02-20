@@ -114,18 +114,24 @@ def _safe_process_one(
 # ------------------------------------------------------------------ #
 
 def mpi_process_batch(
-    mic_dir: str | Path,
+    mic_dir,
     outdir: str | Path,
     cfg: Optional[PickerConfig] = None,
     verbose: bool = True,
     show_mic: Optional[str] = None,
 ) -> List[dict]:
     """
-    Process all micrographs in *mic_dir* using MPI parallelism.
+    Process micrographs using MPI parallelism.
+
+    Parameters
+    ----------
+    mic_dir : str, Path, or list
+        Directory containing micrographs, or a pre-built list of paths
+        (e.g. gathered from multiple input directories).
 
     Communication pattern::
 
-        Rank 0: list_micrographs() -> _scatter_work() -> comm.scatter()
+        Rank 0: list paths -> _scatter_work() -> comm.scatter()
         All ranks: loop _safe_process_one() on local subset
         All ranks: comm.gather(local_results, root=0)
         Rank 0: _merge_results() -> QC flags -> write CSVs -> batch summary
@@ -146,10 +152,13 @@ def mpi_process_batch(
     # ── Rank 0: discover micrographs and distribute work ──────────
     if rank == 0:
         outdir.mkdir(parents=True, exist_ok=True)
-        mic_paths = [str(p) for p in list_micrographs(mic_dir)]
+        if isinstance(mic_dir, (list, tuple)):
+            mic_paths = [str(p) for p in sorted(mic_dir)]
+        else:
+            mic_paths = [str(p) for p in list_micrographs(mic_dir)]
         n_total = len(mic_paths)
         if verbose:
-            print(f"[rank 0/{size}] Found {n_total} micrograph(s) in {mic_dir}",
+            print(f"[rank 0/{size}] Found {n_total} micrograph(s)",
                   flush=True)
         chunks = _scatter_work(mic_paths, size)
     else:

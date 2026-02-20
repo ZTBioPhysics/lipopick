@@ -450,7 +450,7 @@ def process_micrograph(
 
 
 def process_batch(
-    mic_dir: str | Path,
+    mic_dir,
     outdir: str | Path,
     cfg: Optional[PickerConfig] = None,
     verbose: bool = True,
@@ -458,12 +458,13 @@ def process_batch(
     show_mic: Optional[str] = None,
 ) -> List[dict]:
     """
-    Process all micrographs in a directory.
+    Process all micrographs in a directory (or from a pre-built path list).
 
     Parameters
     ----------
-    mic_dir : str or Path
-        Directory containing .mrc / .tif files.
+    mic_dir : str, Path, or list of Path
+        Directory containing .mrc / .tif files, or a pre-built list of
+        micrograph paths (e.g. gathered from multiple directories).
     outdir : str or Path
         Output directory.
     cfg : PickerConfig or None
@@ -479,7 +480,10 @@ def process_batch(
     -------
     results : list of dict
     """
-    mic_paths = list_micrographs(mic_dir)
+    if isinstance(mic_dir, (list, tuple)):
+        mic_paths = sorted(mic_dir)
+    else:
+        mic_paths = list_micrographs(mic_dir)
     if not mic_paths:
         print(f"No micrographs found in {mic_dir}")
         return []
