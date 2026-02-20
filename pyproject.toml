@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lipopick"
+version = "0.1.0"
+description = "Multi-scale blob-based particle picker for cryo-EM lipoprotein micrographs"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "mrcfile>=1.4",
+    "matplotlib>=3.7",
+    "tifffile>=2023.7",
+]
+
+[project.optional-dependencies]
+star = ["starfile>=0.5", "pandas>=2.0"]
+mpi = ["mpi4py>=3.1"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+lipopick = "lipopick.cli:pick_main"
+lipopick-bin = "lipopick.cli:bin_main"
+lipopick-mpi = "lipopick.cli:mpi_pick_main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lipopick*"]

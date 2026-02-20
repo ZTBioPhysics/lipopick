@@ -1,0 +1,10 @@
+numpy>=1.24
+scipy>=1.10
+mrcfile>=1.4
+matplotlib>=3.7
+tifffile>=2023.7
+# Optional: STAR output
+# starfile>=0.5
+# pandas>=2.0
+# Dev
+pytest>=7.0
