@@ -2,15 +2,13 @@
 Orchestrator: ties all stages together into pick_micrograph() and process_batch().
 
 Stages per micrograph (pick_micrograph):
-  1. Build pyramid levels (downsample with anti-aliasing)
-  2. DoG scale-space + local maxima per level
-  3. Merge candidates across levels → full-res coordinates
-  4. Edge exclusion (reject picks within dmax/2 of border)
-  5. Size-aware NMS
-  6. Optional radial refinement
-  7. Post-refine diameter filter (clip to [dmin, dmax])
-  8. Pixel-statistics filter (bright interior / ambiguous / contaminant)
-  9. Post-refinement overlap filter (greedy, score-ordered)
+  1. Detection (DoG, template matching, or combined)
+  2. Edge exclusion (reject picks within dmax/2 of border)
+  3. Size-aware NMS
+  4. Optional radial refinement
+  5. Post-refine diameter filter (clip to [dmin, dmax])
+  6. Pixel-statistics filter (bright interior / ambiguous / contaminant)
+  7. Post-refinement overlap filter (greedy, score-ordered)
 """
 from __future__ import annotations
 
@@ -49,6 +47,97 @@ _DS = 4
 _SIGMA_TO_DIAM = 2.0 * 2.0 ** 0.5   # diameter = sigma * SIGMA_TO_DIAM
 
 
+def _detect_dog(
+    image: np.ndarray,
+    cfg: PickerConfig,
+) -> np.ndarray:
+    """
+    DoG detection: build pyramid, compute scale-space, extract local maxima.
+
+    Returns
+    -------
+    candidates : ndarray, shape (N, 5), float32
+    """
+    all_candidates: List[np.ndarray] = []
+
+    for ds, d_lo, d_hi in cfg.pyramid_levels:
+        level_img = build_pyramid_level(image, ds)
+
+        sigma_min, sigma_max, n_steps = sigma_range_for_level(
+            d_lo, d_hi, ds, cfg.dog_k, cfg.dog_min_steps
+        )
+
+        dog_stack, sigmas = compute_dog_stack(level_img, sigma_min, n_steps, k=cfg.dog_k)
+        sigma_max_level = float(sigmas[-1]) * cfg.dog_k
+        border_level = min(
+            int(np.ceil(sigma_max_level * 2)),
+            min(level_img.shape[0], level_img.shape[1]) // 4,
+        )
+        candidates = find_local_maxima(
+            dog_stack, sigmas,
+            threshold_percentile=cfg.threshold_percentile,
+            min_score=cfg.min_score,
+            ds=ds,
+            border=border_level,
+        )
+        all_candidates.append(candidates)
+        del dog_stack
+
+    if not all_candidates or all(c.shape[0] == 0 for c in all_candidates):
+        return np.empty((0, 5), dtype=np.float32)
+
+    return np.vstack([c for c in all_candidates if c.shape[0] > 0])
+
+
+def _detect_template(
+    image: np.ndarray,
+    cfg: PickerConfig,
+) -> np.ndarray:
+    """
+    Template matching detection: dark-disc NCC at multiple radii.
+
+    Returns
+    -------
+    candidates : ndarray, shape (N, 5), float32
+    """
+    from .template import compute_correlation_maps, find_correlation_peaks
+
+    r_min = cfg.dmin / 2.0
+    r_max = cfg.dmax / 2.0
+    radii = np.arange(r_min, r_max + cfg.template_radius_step, cfg.template_radius_step)
+
+    best_score, best_radius = compute_correlation_maps(
+        image, radii, cfg.annulus_width_fraction, cfg.max_annulus_width,
+    )
+    candidates = find_correlation_peaks(
+        best_score, best_radius,
+        threshold=cfg.correlation_threshold,
+        min_separation=cfg.template_min_separation,
+        border=int(np.ceil(r_min)),  # minimal border; per-peak filter below
+    )
+
+    # Per-peak border filter: reject peaks whose detected template
+    # (disc + annulus) extends past the image edge.  This is more
+    # permissive than a global border based on r_max, so small-radius
+    # picks near edges are kept.
+    if candidates.shape[0] > 0:
+        ny, nx = image.shape
+        peak_r = candidates[:, _SIGMA] * _SIGMA_TO_DIAM / 2.0  # detected radius
+        annulus_w = np.minimum(
+            cfg.annulus_width_fraction * peak_r, cfg.max_annulus_width,
+        )
+        r_out = peak_r + annulus_w
+        keep = (
+            (candidates[:, _X] >= r_out) &
+            (candidates[:, _X] <= nx - 1 - r_out) &
+            (candidates[:, _Y] >= r_out) &
+            (candidates[:, _Y] <= ny - 1 - r_out)
+        )
+        candidates = candidates[keep]
+
+    return candidates
+
+
 def pick_micrograph(
     image: np.ndarray,
     cfg: PickerConfig,
@@ -67,45 +156,26 @@ def pick_micrograph(
         Columns: x_full, y_full, sigma_full, score, ds
     """
     ny, nx = image.shape
-    all_candidates: List[np.ndarray] = []
 
-    for ds, d_lo, d_hi in cfg.pyramid_levels:
-        # 1. Build pyramid level
-        level_img = build_pyramid_level(image, ds)
+    # ── Detection phase ───────────────────────────────────────────────
+    if cfg.detection_method == "dog":
+        candidates = _detect_dog(image, cfg)
+    elif cfg.detection_method == "template":
+        candidates = _detect_template(image, cfg)
+    elif cfg.detection_method == "combined":
+        dog_cands = _detect_dog(image, cfg)
+        tmpl_cands = _detect_template(image, cfg)
+        parts = [c for c in (dog_cands, tmpl_cands) if c.shape[0] > 0]
+        candidates = np.vstack(parts) if parts else np.empty((0, 5), dtype=np.float32)
+    else:
+        raise ValueError(f"Unknown detection_method: {cfg.detection_method!r}")
 
-        # 2. Compute DoG sigma range for this level
-        sigma_min, sigma_max, n_steps = sigma_range_for_level(
-            d_lo, d_hi, ds, cfg.dog_k, cfg.dog_min_steps
-        )
-
-        # 3. Compute DoG stack and find local maxima
-        dog_stack, sigmas = compute_dog_stack(level_img, sigma_min, n_steps, k=cfg.dog_k)
-        # Exclude border pixels (in level-coords) from threshold computation.
-        # Border = min(sigma_max * 2, level_image // 4) so we always keep ≥50% interior.
-        sigma_max_level = float(sigmas[-1]) * cfg.dog_k
-        border_level = min(
-            int(np.ceil(sigma_max_level * 2)),
-            min(level_img.shape[0], level_img.shape[1]) // 4,
-        )
-        candidates = find_local_maxima(
-            dog_stack, sigmas,
-            threshold_percentile=cfg.threshold_percentile,
-            min_score=cfg.min_score,
-            ds=ds,
-            border=border_level,
-        )
-        all_candidates.append(candidates)
-
-        # Free DoG stack memory before next level
-        del dog_stack
-
-    # 4. Merge all candidates
-    if not all_candidates or all(c.shape[0] == 0 for c in all_candidates):
+    if candidates.shape[0] == 0:
         return np.empty((0, 5), dtype=np.float32)
 
-    candidates = np.vstack([c for c in all_candidates if c.shape[0] > 0])
+    # ── Post-processing (identical for all methods) ───────────────────
 
-    # 5. Edge exclusion: reject within dmax/2 of image border
+    # Edge exclusion: reject within dmax/2 of image border
     border = cfg.dmax / 2.0 * cfg.edge_fraction
     edge_mask = (
         (candidates[:, _X] < border) |
@@ -114,10 +184,10 @@ def pick_micrograph(
         (candidates[:, _Y] > ny - 1 - border)
     )
 
-    # 6. Size-aware NMS
+    # Size-aware NMS
     picks = size_aware_nms(candidates, beta=cfg.nms_beta, edge_mask=edge_mask)
 
-    # 7. Optional radial refinement
+    # Optional radial refinement
     if cfg.refine and picks.shape[0] > 0:
         from .refine import refine_picks
         picks = refine_picks(
@@ -125,28 +195,28 @@ def pick_micrograph(
             r_min=cfg.dmin / 2.0, r_max=cfg.dmax / 2.0,
         )
 
-        # 8. Post-refine diameter filter: discard picks whose refined diameter
-        # falls outside [dmin, dmax].  Refinement can push diameters beyond the
-        # search range when it locks onto a cluster edge or ice boundary.
+        # Post-refine diameter filter: discard picks whose refined diameter
+        # falls outside [dmin, dmax].
         diameters = picks[:, _SIGMA] * _SIGMA_TO_DIAM
         keep = (diameters >= cfg.dmin) & (diameters <= cfg.dmax)
         picks = picks[keep]
 
-    # 9. Pixel-statistics filter: remove artifacts based on interior darkness
-    # and local contrast.  Three rejection criteria:
-    #   (a) dark_fraction < 0.3 → bright interior (inflated small spot)
-    #   (b) dark_fraction < 0.6 AND local_contrast < 0.2 → ambiguous darkness
-    #       with no contrast against local background
-    #   (c) local_contrast > max_local_contrast → isolated contaminant
+    # Pixel-statistics filter
     if picks.shape[0] > 0:
         picks = _filter_by_pixel_stats(
             image, picks, max_local_contrast=cfg.max_local_contrast,
         )
 
-    # 10. Post-refinement overlap filter: NMS runs before refinement, but
-    # refinement can inflate diameters up to 2×, creating new overlaps.
+    # Anti-cluster filter: reject large picks that contain multiple
+    # smaller accepted picks inside them (cluster false positives).
+    if picks.shape[0] > 1:
+        picks = _filter_cluster_picks(picks, min_interior_picks=2)
+
+    # Post-refinement overlap filter
     if cfg.max_overlap > 0 and picks.shape[0] > 1:
-        picks = _filter_overlapping_picks(picks, cfg.max_overlap)
+        picks = _filter_overlapping_picks(
+            picks, cfg.max_overlap, overlap_mode=cfg.overlap_mode,
+        )
 
     return picks
 
@@ -235,16 +305,78 @@ def _filter_by_pixel_stats(
     return picks[keep]
 
 
-def _circle_overlap_fraction(r1: float, r2: float, d: float) -> float:
+def _filter_cluster_picks(
+    picks: np.ndarray,
+    min_interior_picks: int = 2,
+) -> np.ndarray:
     """
-    Return the overlap area of two circles divided by the area of the smaller.
+    Reject large picks that contain smaller accepted picks inside them.
+
+    A real large particle has a smooth interior — it would not contain
+    multiple smaller detected particles.  Large picks that do are almost
+    certainly cluster false positives (a group of small particles that
+    correlated with a large template).
+
+    For each pick, count how many *smaller* picks have their centre inside
+    this pick's circle.  If count >= min_interior_picks, reject it.
 
     Parameters
     ----------
-    r1, r2 : float
-        Radii of the two circles.
+    picks : ndarray, shape (N, 5)
+    min_interior_picks : int
+        Reject a pick if it contains at least this many smaller picks.
+
+    Returns
+    -------
+    filtered : ndarray, shape (M, 5)
+    """
+    if picks.shape[0] <= 1:
+        return picks
+
+    radii = picks[:, _SIGMA] * _SIGMA_TO_DIAM / 2.0
+    xy = picks[:, :2]  # (N, 2) — x, y columns
+
+    tree = cKDTree(xy)
+    keep = np.ones(len(picks), dtype=bool)
+
+    for i in range(len(picks)):
+        r_i = radii[i]
+        # Find all picks whose centres fall inside this pick's circle
+        nearby = tree.query_ball_point(xy[i], r=r_i)
+        # Count only picks that are smaller than this one
+        n_interior = 0
+        for j in nearby:
+            if j == i:
+                continue
+            if radii[j] < r_i:
+                n_interior += 1
+        if n_interior >= min_interior_picks:
+            keep[i] = False
+
+    return picks[keep]
+
+
+def _circle_overlap_fraction(
+    r1: float, r2: float, d: float, mode: str = "smaller",
+) -> float:
+    """
+    Return the overlap area of two circles as a fraction of a reference area.
+
+    Parameters
+    ----------
+    r1 : float
+        Radius of the candidate circle (the one being tested).
+    r2 : float
+        Radius of the already-accepted circle.
     d : float
         Distance between their centres.
+    mode : str
+        Which circle's area to use as denominator:
+        - ``"smaller"`` — area of the smaller circle (strict, penalises
+          large circles that overlap any small one).
+        - ``"candidate"`` — area of r1.  A large candidate overlapping
+          a few small accepted picks shows low overlap and survives.
+        - ``"larger"`` — area of the larger circle (most permissive).
 
     Returns
     -------
@@ -256,7 +388,16 @@ def _circle_overlap_fraction(r1: float, r2: float, d: float) -> float:
         return 0.0
     # One circle contained in the other
     if d + min(r1, r2) <= max(r1, r2):
-        return 1.0
+        if mode == "smaller":
+            return 1.0
+        elif mode == "candidate":
+            # Candidate fully inside accepted → fraction = 1.0
+            # Accepted fully inside candidate → fraction = r2²/r1²
+            if r1 <= r2:
+                return 1.0
+            return float(np.clip(r2 * r2 / (r1 * r1), 0.0, 1.0))
+        else:  # larger
+            return float(np.clip(min(r1, r2) ** 2 / max(r1, r2) ** 2, 0.0, 1.0))
 
     # Standard circle-circle intersection area
     r1_sq, r2_sq, d_sq = r1 * r1, r2 * r2, d * d
@@ -269,25 +410,35 @@ def _circle_overlap_fraction(r1: float, r2: float, d: float) -> float:
     area = r1_sq * (alpha - np.sin(2 * alpha) / 2.0) + \
            r2_sq * (beta - np.sin(2 * beta) / 2.0)
 
-    smaller_area = np.pi * min(r1, r2) ** 2
-    return float(np.clip(area / smaller_area, 0.0, 1.0))
+    if mode == "smaller":
+        denom = np.pi * min(r1, r2) ** 2
+    elif mode == "candidate":
+        denom = np.pi * r1_sq
+    else:  # larger
+        denom = np.pi * max(r1, r2) ** 2
+
+    return float(np.clip(area / denom, 0.0, 1.0))
 
 
 def _filter_overlapping_picks(
     picks: np.ndarray,
     max_overlap: float,
+    overlap_mode: str = "candidate",
 ) -> np.ndarray:
     """
     Greedy post-refinement overlap filter.
 
     Keeps higher-scoring picks and rejects lower-scoring ones that overlap
-    more than *max_overlap* (as a fraction of the smaller circle) with any
-    already-accepted pick.
+    more than *max_overlap* with any already-accepted pick.
 
     Parameters
     ----------
     picks : ndarray, shape (N, 5)
     max_overlap : float in (0, 1]
+    overlap_mode : str
+        Passed to ``_circle_overlap_fraction``.  ``"candidate"`` (default)
+        divides intersection by the candidate's area, so large picks
+        overlapping a few small accepted ones survive.
 
     Returns
     -------
@@ -330,7 +481,7 @@ def _filter_overlapping_picks(
         for j in nearby:
             dist = float(np.hypot(x - accepted_xy[j][0], y - accepted_xy[j][1]))
             r_j = accepted_r[j]
-            frac = _circle_overlap_fraction(r_i, r_j, dist)
+            frac = _circle_overlap_fraction(r_i, r_j, dist, mode=overlap_mode)
             if frac > max_overlap:
                 rejected = True
                 break

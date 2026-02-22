@@ -30,7 +30,7 @@ def compute_dog_stack(
     k: float = 1.10,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Compute the scale-normalised DoG stack for one pyramid level.
+    Compute the raw DoG stack for one pyramid level.
 
     Parameters
     ----------
@@ -63,11 +63,7 @@ def compute_dog_stack(
         sigma_next = sigma_curr * k
         g_curr = gaussian_filter(image, sigma=sigma_next, mode='nearest').astype(np.float32)
 
-        # Raw DoG (no sigma² normalization).
-        # The raw DoG correctly identifies the matched scale: for a disk blob of radius R,
-        # the raw DoG at the center peaks at sigma ≈ R/sqrt(2), giving diameter = sigma*2√2.
-        # Multiplying by sigma² shifts the maximum toward larger sigmas (monotonically),
-        # which causes the detected scale to always be sigma_max — biasing diameter estimates.
+        # Raw DoG (no sigma² normalization — see module docstring for rationale)
         dog_stack[i] = g_curr - g_prev
 
         sigmas[i] = sigma_curr
@@ -99,6 +95,8 @@ def find_local_maxima(
         Absolute minimum score (applied after percentile threshold).
     ds : int
         Downsample factor — used to map coordinates to full-res.
+    border : int
+        Exclude this many border pixels from threshold computation.
 
     Returns
     -------

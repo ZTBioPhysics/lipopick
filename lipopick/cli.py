@@ -58,6 +58,15 @@ def _add_pick_args(parser: argparse.ArgumentParser) -> None:
                         help="Log scale on histogram y-axis (default)")
     parser.add_argument("--linear-scale", action="store_true",
                         help="Linear scale on histogram y-axis")
+    parser.add_argument("--method", type=str, default="dog",
+                        choices=["dog", "template", "combined"],
+                        help="Detection method")
+    parser.add_argument("--correlation-threshold", type=float, default=0.15,
+                        help="NCC threshold for template matching [0, 1]")
+    parser.add_argument("--template-radius-step", type=float, default=3.0,
+                        help="Pixel step between template radii")
+    parser.add_argument("--annulus-width-fraction", type=float, default=0.5,
+                        help="Annulus width as fraction of template radius")
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="Suppress progress output")
 
@@ -83,6 +92,10 @@ def _cfg_from_args(args: argparse.Namespace):
         figure_dpi=args.dpi,
         figure_formats=("png", "svg"),
         log_scale=not args.linear_scale,
+        detection_method=args.method,
+        correlation_threshold=args.correlation_threshold,
+        template_radius_step=args.template_radius_step,
+        annulus_width_fraction=args.annulus_width_fraction,
     )
 
 
@@ -111,8 +124,9 @@ def pick_main(argv=None):
 
     verbose = not args.quiet
     if verbose:
+        method_str = f"  method={args.method}" if args.method != "dog" else ""
         print(f"lipopick  |  dmin={args.dmin}px  dmax={args.dmax}px"
-              f"  beta={args.nms_beta}  refine={args.refine}")
+              f"  beta={args.nms_beta}  refine={args.refine}{method_str}")
         for ip in input_paths:
             print(f"  Input:  {ip}")
         print(f"  Output: {outdir}")

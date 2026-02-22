@@ -118,11 +118,26 @@ class PickerConfig:
     # ------------------------------------------------------------------ #
     max_local_contrast: float = 3.0   # reject picks above this (0 = disable)
     max_overlap: float = 0.3          # max circle overlap fraction (0 = disable)
+    overlap_mode: str = "smaller"     # "smaller", "candidate", or "larger"
 
     # ------------------------------------------------------------------ #
     # Extraction plan
     # ------------------------------------------------------------------ #
     n_size_bins: int = 3    # number of extraction size bins
+
+    # ------------------------------------------------------------------ #
+    # Detection method
+    # ------------------------------------------------------------------ #
+    detection_method: str = "dog"  # "dog", "template", or "combined"
+
+    # ------------------------------------------------------------------ #
+    # Template matching parameters
+    # ------------------------------------------------------------------ #
+    template_radius_step: float = 3.0       # px step between template radii
+    correlation_threshold: float = 0.15     # absolute NCC threshold [0, 1]
+    annulus_width_fraction: float = 0.5     # annulus width = fraction * radius
+    max_annulus_width: float = 40.0         # cap annulus width (px)
+    template_min_separation: int = 5        # local maxima neighborhood size
 
     def __post_init__(self):
         if self.dmin <= 0 or self.dmax <= 0:
@@ -133,12 +148,20 @@ class PickerConfig:
             raise ValueError("threshold_percentile must be in (0, 100)")
         if not (0 < self.nms_beta <= 1.5):
             raise ValueError("nms_beta should be in (0, 1.5]")
-        if self.dog_k <= 1.0:
+        if self.detection_method != "template" and self.dog_k <= 1.0:
             raise ValueError("dog_k must be > 1.0")
         if self.max_local_contrast < 0:
             raise ValueError("max_local_contrast must be >= 0")
         if self.max_overlap < 0 or self.max_overlap > 1.0:
             raise ValueError("max_overlap must be in [0, 1.0]")
+        if self.overlap_mode not in ("smaller", "candidate", "larger"):
+            raise ValueError("overlap_mode must be 'smaller', 'candidate', or 'larger'")
+        if self.detection_method not in ("dog", "template", "combined"):
+            raise ValueError("detection_method must be 'dog', 'template', or 'combined'")
+        if not (0 <= self.correlation_threshold <= 1):
+            raise ValueError("correlation_threshold must be in [0, 1]")
+        if self.template_radius_step <= 0:
+            raise ValueError("template_radius_step must be > 0")
 
         if self.pyramid_levels is None:
             self.pyramid_levels = _auto_pyramid_levels(self.dmin, self.dmax)

@@ -7,9 +7,11 @@ diameter estimate. No training data required — purely classical.
 
 ## Current Status
 MPI parallelization deployed and tested on HPC: 300 micrographs in ~110s with 16 ranks
-(50,600 picks, ~0.37 s/image). All 42 unit tests pass. Package installable with CLI entry
+(50,600 picks, ~0.37 s/image). All 61 unit tests pass. Package installable with CLI entry
 points (`lipopick`, `lipopick-bin`, `lipopick-mpi`) and per-bin STAR export with coordinate
-rescaling.
+rescaling. **DoG is the primary detection method.** Template matching (`--method template`)
+is available but performs equivalently to DoG on real data — its value is as a future
+second-pass detector on cleaned images (mask-and-redetect), not as a standalone replacement.
 
 ## Architecture
 - `lipopick/config.py` — PickerConfig dataclass (all tunable parameters)
@@ -22,6 +24,7 @@ rescaling.
 - `lipopick/viz.py` — Overlay plots, histograms, save_figure helper
 - `lipopick/pipeline.py` — Orchestrator: pick_micrograph / process_batch + post-processing filters
 - `lipopick/mpi.py` — MPI parallelization (scatter/gather, 1 rank = 1 core)
+- `lipopick/template.py` — Dark-disc NCC template matching (alternative/supplementary detector)
 - `lipopick/cli.py` — Installable CLI entry points (`lipopick`, `lipopick-bin`, `lipopick-mpi`)
 - `scripts/pick_particles.py` — Spyder-friendly picking script (editable constants + argparse)
 - `scripts/size_binning.py` — Spyder-friendly size binning + per-bin STAR export
@@ -88,17 +91,19 @@ mpirun -np 32 lipopick-mpi -i /path/to/micrographs/ -o /path/to/outputs/ \
 - [x] Package for distribution (CLI entry points: `lipopick`, `lipopick-bin`)
 - [x] Per-bin STAR export with coordinate rescaling (picking → extraction pixel frame)
 - [x] MPI parallelization for HPC clusters (`lipopick-mpi` entry point, tested: 300 mics in 110s with 16 ranks)
-- [ ] Multi-input directory support (allow multiple `-i` paths — denoised micrographs are spread across jobs)
-- [ ] Speed optimization (baseline: ~14.5 s/image single-core, ~0.37 s/image with 16 MPI ranks)
+- [x] Multi-input directory support (allow multiple `-i` paths — denoised micrographs are spread across jobs)
 - [ ] Documentation (README, usage examples)
+- [x] Template matching detector (`--method template`) — works but equivalent to DoG; standalone template matching cannot detect large faint particles (same cluster interference problem)
+- [ ] Large faint particle detection (mask-and-redetect: remove small picks, re-run on cleaned image)
 
 ## Known Limitations
 - **Large faint particles not detected**: Some LDLp micrographs have large (~120-160px) lipid-rich
   particles that are lighter than typical. The DoG fails to produce local maxima at these locations —
   the faint signal is overwhelmed by nearby dark particles (DoG response ~0.01 vs threshold ~0.02).
-  Two-pass detection was attempted but the DoG fundamentally cannot detect these particles; would
-  require a different detection method (template matching, mask-then-redetect, or adaptive local
-  thresholding).
+  Two-pass detection and standalone template matching were both attempted — both fail because
+  small dark particles dominate the signal at all scales. Template matching scores clusters
+  of small particles the same as real large particles. Mask-and-redetect (remove small picks
+  first, then re-detect on cleaned image) is the remaining approach.
 - Raw DoG scale detection underestimates diameter for hard-edged particles — radial refinement
   compensates but large particles may still be slightly underestimated
 - Percentile-based thresholding needs manual tuning per dataset (99.7% for sparse, 80% for dense)

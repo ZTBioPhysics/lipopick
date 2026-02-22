@@ -31,6 +31,11 @@ MAX_LOCAL_CONTRAST = 3.0  # reject isolated contaminants (0=disable)
 MAX_OVERLAP = 0.3         # max circle overlap after refinement (0=disable)
 N_SIZE_BINS = 3   # number of extraction size bins
 
+# Detection method: "dog" (default), "template", or "combined"
+DETECTION_METHOD = "dog"
+CORRELATION_THRESHOLD = 0.15   # NCC threshold for template matching [0, 1]
+TEMPLATE_RADIUS_STEP = 3.0    # px step between template radii
+
 WRITE_CSV = True
 WRITE_STAR = False
 WRITE_OVERLAY = True
@@ -70,6 +75,13 @@ def parse_args(argv=None):
                    help="Number of size bins in extraction plan")
     p.add_argument("--star", action="store_true", default=None,
                    help="Also write RELION-compatible STAR file")
+    p.add_argument("--method", type=str, default=None,
+                   choices=["dog", "template", "combined"],
+                   help="Detection method")
+    p.add_argument("--correlation-threshold", type=float, default=None,
+                   help="NCC threshold for template matching [0, 1]")
+    p.add_argument("--template-radius-step", type=float, default=None,
+                   help="Pixel step between template radii")
     p.add_argument("--no-overlay", action="store_true",
                    help="Skip overlay figure")
     p.add_argument("--no-histogram", action="store_true",
@@ -96,6 +108,9 @@ def main(argv=None):
     max_lc = args.max_local_contrast if args.max_local_contrast is not None else MAX_LOCAL_CONTRAST
     max_ov = args.max_overlap if args.max_overlap is not None else MAX_OVERLAP
     n_bins = args.n_bins if args.n_bins is not None else N_SIZE_BINS
+    method = args.method if args.method is not None else DETECTION_METHOD
+    corr_thresh = args.correlation_threshold if args.correlation_threshold is not None else CORRELATION_THRESHOLD
+    tmpl_step = args.template_radius_step if args.template_radius_step is not None else TEMPLATE_RADIUS_STEP
     write_star = args.star if args.star is not None else WRITE_STAR
     write_overlay = not args.no_overlay if args.no_overlay else WRITE_OVERLAY
     write_hist = not args.no_histogram if args.no_histogram else WRITE_HISTOGRAM
@@ -126,10 +141,14 @@ def main(argv=None):
         write_histogram=write_hist,
         figure_dpi=dpi,
         figure_formats=tuple(FIGURE_FORMATS),
+        detection_method=method,
+        correlation_threshold=corr_thresh,
+        template_radius_step=tmpl_step,
     )
 
     if verbose:
-        print(f"lipopick  |  dmin={dmin}px  dmax={dmax}px  beta={beta}  refine={refine}")
+        method_str = f"  method={method}" if method != "dog" else ""
+        print(f"lipopick  |  dmin={dmin}px  dmax={dmax}px  beta={beta}  refine={refine}{method_str}")
         print(f"  Input:  {input_path}")
         print(f"  Output: {outdir}")
 
