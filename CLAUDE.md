@@ -94,16 +94,17 @@ mpirun -np 32 lipopick-mpi -i /path/to/micrographs/ -o /path/to/outputs/ \
 - [x] Multi-input directory support (allow multiple `-i` paths — denoised micrographs are spread across jobs)
 - [ ] Documentation (README, usage examples)
 - [x] Template matching detector (`--method template`) — works but equivalent to DoG; standalone template matching cannot detect large faint particles (same cluster interference problem)
-- [ ] Large faint particle detection (mask-and-redetect: remove small picks, re-run on cleaned image)
+- [x] ~~Large faint particle detection (mask-and-redetect)~~ — implemented on `mask-and-redetect` branch, failed on real data (see Known Limitations)
 
 ## Known Limitations
 - **Large faint particles not detected**: Some LDLp micrographs have large (~120-160px) lipid-rich
-  particles that are lighter than typical. The DoG fails to produce local maxima at these locations —
-  the faint signal is overwhelmed by nearby dark particles (DoG response ~0.01 vs threshold ~0.02).
-  Two-pass detection and standalone template matching were both attempted — both fail because
-  small dark particles dominate the signal at all scales. Template matching scores clusters
-  of small particles the same as real large particles. Mask-and-redetect (remove small picks
-  first, then re-detect on cleaned image) is the remaining approach.
+  particles that are lighter than typical. Every attempted approach has failed:
+  (1) DoG two-pass — faint signal overwhelmed by nearby dark particles;
+  (2) Template matching — scores clusters of small particles the same as real large ones;
+  (3) Mask-and-redetect (`mask-and-redetect` branch) — small pass-1 picks sit on the edges of
+  large faint particles, so masking them destroys the large particle signal; noise replacement
+  creates visible artifacts; pass-2 detections are all false positives on mask boundaries.
+  Accepted as a fundamental limitation of classical detection on these micrographs.
 - Raw DoG scale detection underestimates diameter for hard-edged particles — radial refinement
   compensates but large particles may still be slightly underestimated
 - Percentile-based thresholding needs manual tuning per dataset (99.7% for sparse, 80% for dense)

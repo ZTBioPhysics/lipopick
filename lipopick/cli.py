@@ -67,6 +67,19 @@ def _add_pick_args(parser: argparse.ArgumentParser) -> None:
                         help="Pixel step between template radii")
     parser.add_argument("--annulus-width-fraction", type=float, default=0.5,
                         help="Annulus width as fraction of template radius")
+    # Pass 2 (mask-and-redetect)
+    parser.add_argument("--pass2", action="store_true",
+                        help="Enable two-pass mask-and-redetect for large faint particles")
+    parser.add_argument("--pass2-dmin", type=float, default=None,
+                        help="Min diameter for pass 2 (default: dmax)")
+    parser.add_argument("--pass2-dmax", type=float, default=None,
+                        help="Max diameter for pass 2 (default: 2*dmax)")
+    parser.add_argument("--pass2-threshold-percentile", type=float, default=None,
+                        help="Threshold percentile for pass 2 (default: same as pass 1)")
+    parser.add_argument("--mask-feather-width", type=float, default=5.0,
+                        help="Cosine feather transition width in pixels")
+    parser.add_argument("--mask-dilation", type=float, default=1.1,
+                        help="Mask radius expansion factor")
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="Suppress progress output")
 
@@ -96,6 +109,12 @@ def _cfg_from_args(args: argparse.Namespace):
         correlation_threshold=args.correlation_threshold,
         template_radius_step=args.template_radius_step,
         annulus_width_fraction=args.annulus_width_fraction,
+        pass2=args.pass2,
+        pass2_dmin=args.pass2_dmin,
+        pass2_dmax=args.pass2_dmax,
+        pass2_threshold_percentile=args.pass2_threshold_percentile,
+        mask_feather_width=args.mask_feather_width,
+        mask_dilation=args.mask_dilation,
     )
 
 
@@ -125,8 +144,9 @@ def pick_main(argv=None):
     verbose = not args.quiet
     if verbose:
         method_str = f"  method={args.method}" if args.method != "dog" else ""
+        pass2_str = f"  pass2=[{cfg.pass2_dmin}-{cfg.pass2_dmax}px]" if args.pass2 else ""
         print(f"lipopick  |  dmin={args.dmin}px  dmax={args.dmax}px"
-              f"  beta={args.nms_beta}  refine={args.refine}{method_str}")
+              f"  beta={args.nms_beta}  refine={args.refine}{method_str}{pass2_str}")
         for ip in input_paths:
             print(f"  Input:  {ip}")
         print(f"  Output: {outdir}")

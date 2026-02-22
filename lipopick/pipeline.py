@@ -19,7 +19,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from .config import PickerConfig
+from .config import PickerConfig, _auto_pyramid_levels
 from .dog import compute_dog_stack, find_local_maxima
 from .extraction import make_extraction_plan
 from .io import (
@@ -31,6 +31,7 @@ from .io import (
     list_micrographs,
     PICKS_CSV_FIELDS,
 )
+from .mask import mask_particles
 from .nms import size_aware_nms
 from scipy.spatial import cKDTree
 from .pyramid import build_pyramid_level, sigma_range_for_level
@@ -138,6 +139,134 @@ def _detect_template(
     return candidates
 
 
+def _make_pass2_config(cfg: PickerConfig) -> PickerConfig:
+    """
+    Build a PickerConfig for pass 2 with larger size range.
+
+    Uses pass2_dmin/dmax/threshold from ``cfg``, auto-computes pyramid
+    levels for the new range, and disables pass2 to prevent recursion.
+    """
+    return PickerConfig(
+        dmin=cfg.pass2_dmin,
+        dmax=cfg.pass2_dmax,
+        pyramid_levels=_auto_pyramid_levels(cfg.pass2_dmin, cfg.pass2_dmax),
+        dog_k=cfg.dog_k,
+        dog_min_steps=cfg.dog_min_steps,
+        threshold_percentile=cfg.pass2_threshold_percentile,
+        min_score=cfg.min_score,
+        nms_beta=cfg.nms_beta,
+        edge_fraction=cfg.edge_fraction,
+        refine=cfg.refine,
+        refine_margin=cfg.refine_margin,
+        pixel_size=cfg.pixel_size,
+        max_local_contrast=cfg.max_local_contrast,
+        max_overlap=cfg.max_overlap,
+        overlap_mode=cfg.overlap_mode,
+        detection_method=cfg.detection_method,
+        correlation_threshold=cfg.correlation_threshold,
+        template_radius_step=cfg.template_radius_step,
+        annulus_width_fraction=cfg.annulus_width_fraction,
+        max_annulus_width=cfg.max_annulus_width,
+        template_min_separation=cfg.template_min_separation,
+        # Disable pass2 to prevent recursion
+        pass2=False,
+        # Output flags — never write from pass2 sub-call
+        write_csv=False,
+        write_star=False,
+        write_extraction_plan=False,
+        write_overlay=False,
+        write_histogram=False,
+    )
+
+
+def _run_pass2(
+    image: np.ndarray,
+    picks_pass1: np.ndarray,
+    cfg: PickerConfig,
+) -> np.ndarray:
+    """
+    Mask pass-1 picks and re-detect at larger scales.
+
+    Steps:
+      1. Mask pass-1 particles with locally-matched Gaussian noise
+      2. Run detection on cleaned image at pass-2 size range
+      3. Post-process pass-2 candidates (edge exclusion, NMS, refine, filters)
+      4. Merge pass-1 + pass-2, de-duplicate with NMS and anti-cluster filter
+
+    Returns combined picks array.
+    """
+    ny, nx = image.shape
+
+    # Mask pass-1 particles
+    cleaned = mask_particles(
+        image, picks_pass1,
+        feather_width=cfg.mask_feather_width,
+        dilation=cfg.mask_dilation,
+    )
+
+    # Build pass-2 config
+    cfg2 = _make_pass2_config(cfg)
+
+    # Detect on cleaned image
+    if cfg2.detection_method == "dog":
+        candidates2 = _detect_dog(cleaned, cfg2)
+    elif cfg2.detection_method == "template":
+        candidates2 = _detect_template(cleaned, cfg2)
+    elif cfg2.detection_method == "combined":
+        dog_c = _detect_dog(cleaned, cfg2)
+        tmpl_c = _detect_template(cleaned, cfg2)
+        parts = [c for c in (dog_c, tmpl_c) if c.shape[0] > 0]
+        candidates2 = np.vstack(parts) if parts else np.empty((0, 5), dtype=np.float32)
+    else:
+        candidates2 = np.empty((0, 5), dtype=np.float32)
+
+    if candidates2.shape[0] == 0:
+        return picks_pass1
+
+    # Post-process pass-2 candidates (same pipeline as pass 1)
+    border2 = cfg2.dmax / 2.0 * cfg2.edge_fraction
+    edge_mask2 = (
+        (candidates2[:, _X] < border2) |
+        (candidates2[:, _X] > nx - 1 - border2) |
+        (candidates2[:, _Y] < border2) |
+        (candidates2[:, _Y] > ny - 1 - border2)
+    )
+    picks2 = size_aware_nms(candidates2, beta=cfg2.nms_beta, edge_mask=edge_mask2)
+
+    if cfg2.refine and picks2.shape[0] > 0:
+        from .refine import refine_picks
+        picks2 = refine_picks(
+            cleaned, picks2, margin=cfg2.refine_margin,
+            r_min=cfg2.dmin / 2.0, r_max=cfg2.dmax / 2.0,
+        )
+        diameters2 = picks2[:, _SIGMA] * _SIGMA_TO_DIAM
+        keep2 = (diameters2 >= cfg2.dmin) & (diameters2 <= cfg2.dmax)
+        picks2 = picks2[keep2]
+
+    # Skip pixel-stats filter for pass-2: it was designed for strong dark
+    # particles and rejects faint ones (dark_fraction < 0.6, low contrast).
+
+    # Anti-cluster on pass-2 picks ALONE — reject pass-2 picks that
+    # contain other pass-2 picks (true cluster false positives).
+    # Must run BEFORE merging: in a dense field, any large circle will
+    # contain pass-1 picks by chance, so the combined anti-cluster would
+    # incorrectly reject all pass-2 picks.
+    if picks2.shape[0] > 1:
+        picks2 = _filter_cluster_picks(picks2, min_interior_picks=2)
+
+    if picks2.shape[0] == 0:
+        return picks_pass1
+
+    # Merge pass-1 and pass-2 picks
+    all_picks = np.vstack([picks_pass1, picks2])
+
+    # Final NMS on combined set — pass-1 picks have higher scores
+    # so they win at overlapping locations
+    all_picks = size_aware_nms(all_picks, beta=cfg.nms_beta)
+
+    return all_picks
+
+
 def pick_micrograph(
     image: np.ndarray,
     cfg: PickerConfig,
@@ -217,6 +346,10 @@ def pick_micrograph(
         picks = _filter_overlapping_picks(
             picks, cfg.max_overlap, overlap_mode=cfg.overlap_mode,
         )
+
+    # ── Pass 2 (mask-and-redetect) ────────────────────────────────────
+    if cfg.pass2 and picks.shape[0] > 0:
+        picks = _run_pass2(image, picks, cfg)
 
     return picks
 

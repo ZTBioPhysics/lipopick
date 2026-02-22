@@ -139,6 +139,16 @@ class PickerConfig:
     max_annulus_width: float = 40.0         # cap annulus width (px)
     template_min_separation: int = 5        # local maxima neighborhood size
 
+    # ------------------------------------------------------------------ #
+    # Pass 2 (mask-and-redetect for large faint particles)
+    # ------------------------------------------------------------------ #
+    pass2: bool = False                                     # enable two-pass detection
+    pass2_dmin: Optional[float] = None                      # default: cfg.dmax
+    pass2_dmax: Optional[float] = None                      # default: 2.0 * cfg.dmax
+    pass2_threshold_percentile: Optional[float] = None      # default: cfg.threshold_percentile
+    mask_feather_width: float = 5.0                         # cosine feather transition (px)
+    mask_dilation: float = 1.1                              # expand mask radius by this factor
+
     def __post_init__(self):
         if self.dmin <= 0 or self.dmax <= 0:
             raise ValueError("dmin and dmax must be positive")
@@ -162,6 +172,23 @@ class PickerConfig:
             raise ValueError("correlation_threshold must be in [0, 1]")
         if self.template_radius_step <= 0:
             raise ValueError("template_radius_step must be > 0")
+
+        # Pass-2 defaults and validation
+        if self.pass2:
+            if self.pass2_dmin is None:
+                self.pass2_dmin = self.dmax
+            if self.pass2_dmax is None:
+                self.pass2_dmax = 2.0 * self.dmax
+            if self.pass2_threshold_percentile is None:
+                self.pass2_threshold_percentile = self.threshold_percentile
+            if self.pass2_dmin >= self.pass2_dmax:
+                raise ValueError("pass2_dmin must be less than pass2_dmax")
+            if not (0 < self.pass2_threshold_percentile < 100):
+                raise ValueError("pass2_threshold_percentile must be in (0, 100)")
+        if self.mask_feather_width < 0:
+            raise ValueError("mask_feather_width must be >= 0")
+        if self.mask_dilation < 1.0:
+            raise ValueError("mask_dilation must be >= 1.0")
 
         if self.pyramid_levels is None:
             self.pyramid_levels = _auto_pyramid_levels(self.dmin, self.dmax)
