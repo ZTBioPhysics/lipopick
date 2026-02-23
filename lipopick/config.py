@@ -116,7 +116,7 @@ class PickerConfig:
     # ------------------------------------------------------------------ #
     # Post-refinement filters
     # ------------------------------------------------------------------ #
-    max_local_contrast: float = 3.0   # reject picks above this (0 = disable)
+    max_local_contrast: float = 2.0   # reject picks above this (0 = disable)
     max_overlap: float = 0.3          # max circle overlap fraction (0 = disable)
     overlap_mode: str = "smaller"     # "smaller", "candidate", or "larger"
 
@@ -138,6 +138,15 @@ class PickerConfig:
     annulus_width_fraction: float = 0.5     # annulus width = fraction * radius
     max_annulus_width: float = 40.0         # cap annulus width (px)
     template_min_separation: int = 5        # local maxima neighborhood size
+
+    # ------------------------------------------------------------------ #
+    # Pass 2 (morphological closing + re-detect)
+    # ------------------------------------------------------------------ #
+    pass2: bool = False                                  # enable two-pass detection
+    pass2_dmin: Optional[float] = None                   # default: 2 * closing_radius
+    pass2_dmax: Optional[float] = None                   # default: 2.0 * dmax
+    pass2_threshold_percentile: Optional[float] = None   # default: threshold_percentile
+    closing_radius: Optional[int] = None                 # SE radius in px (default: dmin)
 
     def __post_init__(self):
         if self.dmin <= 0 or self.dmax <= 0:
@@ -162,6 +171,19 @@ class PickerConfig:
             raise ValueError("correlation_threshold must be in [0, 1]")
         if self.template_radius_step <= 0:
             raise ValueError("template_radius_step must be > 0")
+
+        # Pass-2 defaults and validation
+        if self.pass2:
+            if self.closing_radius is None:
+                self.closing_radius = int(self.dmin)
+            if self.pass2_dmin is None:
+                self.pass2_dmin = float(2 * self.closing_radius)
+            if self.pass2_dmax is None:
+                self.pass2_dmax = 2.0 * self.dmax
+            if self.pass2_threshold_percentile is None:
+                self.pass2_threshold_percentile = self.threshold_percentile
+            if self.pass2_dmin >= self.pass2_dmax:
+                raise ValueError("pass2_dmin must be less than pass2_dmax")
 
         if self.pyramid_levels is None:
             self.pyramid_levels = _auto_pyramid_levels(self.dmin, self.dmax)

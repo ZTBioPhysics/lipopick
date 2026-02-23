@@ -27,7 +27,7 @@ PIXEL_SIZE = None # Å/px; set to show nm in figures (e.g. 3.0341)
 THRESHOLD_PERCENTILE = 99.7
 NMS_BETA = 0.8
 REFINE = False    # enable radial edge refinement
-MAX_LOCAL_CONTRAST = 3.0  # reject isolated contaminants (0=disable)
+MAX_LOCAL_CONTRAST = 2.0  # reject isolated contaminants (0=disable)
 MAX_OVERLAP = 0.3         # max circle overlap after refinement (0=disable)
 N_SIZE_BINS = 3   # number of extraction size bins
 
@@ -35,6 +35,13 @@ N_SIZE_BINS = 3   # number of extraction size bins
 DETECTION_METHOD = "dog"
 CORRELATION_THRESHOLD = 0.15   # NCC threshold for template matching [0, 1]
 TEMPLATE_RADIUS_STEP = 3.0    # px step between template radii
+
+# Two-pass detection (morphological closing)
+PASS2 = False                  # enable morphological-closing two-pass detection
+PASS2_DMIN = None              # default: 2 * CLOSING_RADIUS
+PASS2_DMAX = None              # default: 2 * DMAX
+PASS2_THRESHOLD_PERCENTILE = None  # default: same as THRESHOLD_PERCENTILE
+CLOSING_RADIUS = None          # SE radius in px (default: DMIN)
 
 WRITE_CSV = True
 WRITE_STAR = False
@@ -82,6 +89,16 @@ def parse_args(argv=None):
                    help="NCC threshold for template matching [0, 1]")
     p.add_argument("--template-radius-step", type=float, default=None,
                    help="Pixel step between template radii")
+    p.add_argument("--pass2", action="store_true", default=None,
+                   help="Enable morphological-closing two-pass detection")
+    p.add_argument("--pass2-dmin", type=float, default=None,
+                   help="Min diameter for pass 2")
+    p.add_argument("--pass2-dmax", type=float, default=None,
+                   help="Max diameter for pass 2")
+    p.add_argument("--pass2-threshold-percentile", type=float, default=None,
+                   help="Threshold percentile for pass 2")
+    p.add_argument("--closing-radius", type=int, default=None,
+                   help="Morphological closing SE radius in px")
     p.add_argument("--no-overlay", action="store_true",
                    help="Skip overlay figure")
     p.add_argument("--no-histogram", action="store_true",
@@ -111,6 +128,11 @@ def main(argv=None):
     method = args.method if args.method is not None else DETECTION_METHOD
     corr_thresh = args.correlation_threshold if args.correlation_threshold is not None else CORRELATION_THRESHOLD
     tmpl_step = args.template_radius_step if args.template_radius_step is not None else TEMPLATE_RADIUS_STEP
+    pass2 = args.pass2 if args.pass2 is not None else PASS2
+    pass2_dmin = args.pass2_dmin if args.pass2_dmin is not None else PASS2_DMIN
+    pass2_dmax = args.pass2_dmax if args.pass2_dmax is not None else PASS2_DMAX
+    pass2_thresh = args.pass2_threshold_percentile if args.pass2_threshold_percentile is not None else PASS2_THRESHOLD_PERCENTILE
+    closing_radius = args.closing_radius if args.closing_radius is not None else CLOSING_RADIUS
     write_star = args.star if args.star is not None else WRITE_STAR
     write_overlay = not args.no_overlay if args.no_overlay else WRITE_OVERLAY
     write_hist = not args.no_histogram if args.no_histogram else WRITE_HISTOGRAM
@@ -144,6 +166,11 @@ def main(argv=None):
         detection_method=method,
         correlation_threshold=corr_thresh,
         template_radius_step=tmpl_step,
+        pass2=pass2,
+        pass2_dmin=pass2_dmin,
+        pass2_dmax=pass2_dmax,
+        pass2_threshold_percentile=pass2_thresh,
+        closing_radius=closing_radius,
     )
 
     if verbose:

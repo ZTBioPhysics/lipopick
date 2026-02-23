@@ -218,7 +218,219 @@ def pick_micrograph(
             picks, cfg.max_overlap, overlap_mode=cfg.overlap_mode,
         )
 
+    # ── Pass 2: morphological closing + re-detect ──────────────────────
+    if cfg.pass2 and picks.shape[0] > 0:
+        picks = _run_pass2(image, picks, cfg)
+
     return picks
+
+
+def _make_pass2_config(cfg: PickerConfig) -> PickerConfig:
+    """Build a PickerConfig for pass-2 detection on the closed image."""
+    from .config import _auto_pyramid_levels
+
+    return PickerConfig(
+        dmin=cfg.pass2_dmin,
+        dmax=cfg.pass2_dmax,
+        threshold_percentile=cfg.pass2_threshold_percentile,
+        nms_beta=cfg.nms_beta,
+        refine=False,         # no refinement for pass-2 — small particles inside
+                              # the large faint targets dominate the radial gradient,
+                              # causing refinement to shrink diameters drastically;
+                              # the DoG scale estimate from the closed image is used
+        pixel_size=cfg.pixel_size,
+        dog_k=cfg.dog_k,
+        dog_min_steps=cfg.dog_min_steps,
+        min_score=cfg.min_score,
+        edge_fraction=cfg.edge_fraction,
+        max_local_contrast=cfg.max_local_contrast,
+        max_overlap=0.0,  # overlap filter runs on merged set, not pass-2 alone
+        pass2=False,      # no recursive pass-2
+    )
+
+
+def _run_pass2(
+    image: np.ndarray,
+    picks_pass1: np.ndarray,
+    cfg: PickerConfig,
+) -> np.ndarray:
+    """
+    Two-pass detection via morphological closing.
+
+    1. Clean the image: grey closing removes dark features smaller than the SE.
+    2. Detect on the cleaned image at large scales (pass-2 config).
+    3. Pre-NMS size filter to remove residual small features near the
+       closing boundary.
+    4. Edge exclusion + NMS.
+    5. Merge pass-1 + pass-2 and deduplicate with NMS.
+
+    No pixel-stats or anti-cluster filtering — those filters were designed
+    for pass-1 (small dark particles on smooth background) and reject the
+    large faint particles pass-2 is meant to find.  Radial refinement runs
+    on the closed image to correct the DoG diameter overestimate (the
+    closing broadens features, inflating the DoG scale).
+
+    Parameters
+    ----------
+    image : ndarray, shape (ny, nx), float32
+    picks_pass1 : ndarray, shape (N, 5), float32
+    cfg : PickerConfig with pass2=True
+
+    Returns
+    -------
+    merged : ndarray, shape (M, 5), float32
+    """
+    from .morph import morphological_clean
+
+    # 1. Clean image
+    cleaned = morphological_clean(image, se_radius=cfg.closing_radius)
+
+    # 2. Detect on cleaned image
+    cfg2 = _make_pass2_config(cfg)
+    candidates = _detect_dog(cleaned, cfg2)
+    if candidates.shape[0] == 0:
+        return picks_pass1
+
+    # 3. Pre-NMS size filter: closing partially attenuates features near the
+    #    removal boundary, leaving residual peaks that would suppress the
+    #    large targets in NMS.  Remove candidates below 2.5 * closing_radius.
+    min_pass2_diam = max(cfg2.dmin, 2.5 * cfg.closing_radius)
+    cand_diams = candidates[:, _SIGMA] * _SIGMA_TO_DIAM
+    candidates = candidates[cand_diams >= min_pass2_diam]
+    if candidates.shape[0] == 0:
+        return picks_pass1
+
+    # 4. Edge exclusion + NMS
+    ny, nx = cleaned.shape
+    border = cfg2.dmax / 2.0 * cfg2.edge_fraction
+    edge_mask = (
+        (candidates[:, _X] < border) |
+        (candidates[:, _X] > nx - 1 - border) |
+        (candidates[:, _Y] < border) |
+        (candidates[:, _Y] > ny - 1 - border)
+    )
+    picks2 = size_aware_nms(candidates, beta=cfg2.nms_beta, edge_mask=edge_mask)
+
+    if picks2.shape[0] == 0:
+        return picks_pass1
+
+    # 5. Radial refinement on the CLOSED image to correct the DoG diameter
+    #    overestimate.  The closed image is smooth (small particles removed),
+    #    so refinement finds the true edge of the large particle without
+    #    interference from small neighbours.
+    if cfg.refine and picks2.shape[0] > 0:
+        from .refine import refine_picks
+        picks2 = refine_picks(
+            cleaned, picks2, margin=0.5,
+            r_min=cfg2.dmin / 2.0, r_max=cfg2.dmax / 2.0,
+        )
+        # Post-refine diameter filter
+        diameters = picks2[:, _SIGMA] * _SIGMA_TO_DIAM
+        keep = (diameters >= cfg2.dmin) & (diameters <= cfg2.dmax)
+        picks2 = picks2[keep]
+
+    # 6. Mode-based local-contrast filter on the CLOSED image.
+    #    True large particles are dark islands in a uniformly bright field
+    #    (annulus mode = bright), while false positives (inter-particle gaps)
+    #    sit in uniformly grey regions (annulus mode ≈ interior mode).
+    #    Using the mode (histogram peak) instead of the mean avoids being
+    #    pulled by outlier pixels.
+    if picks2.shape[0] > 0:
+        picks2 = _filter_pass2_by_mode_contrast(cleaned, image, picks2)
+
+    if picks2.shape[0] == 0:
+        return picks_pass1
+
+    # 7. Merge pass-1 + pass-2, deduplicate with NMS
+    merged = np.vstack([picks_pass1, picks2])
+    merged = size_aware_nms(merged, beta=cfg.nms_beta)
+
+    return merged
+
+
+def _histogram_mode(pixels: np.ndarray, n_bins: int = 64) -> float:
+    """Return the mode (most common value) of *pixels* via histogram peak."""
+    counts, edges = np.histogram(pixels, bins=n_bins)
+    peak_bin = int(np.argmax(counts))
+    return float(0.5 * (edges[peak_bin] + edges[peak_bin + 1]))
+
+
+def _mode_contrast(
+    image: np.ndarray,
+    cx: float,
+    cy: float,
+    radius: float,
+    r_inner: float = 1.5,
+    r_outer: float = 2.5,
+) -> float:
+    """Compute (outer_ring_mode - interior_mode) / image_std for one pick.
+
+    r_inner and r_outer are fractions of radius defining the reference ring.
+    Default (1.5–2.5r) gives a wide annulus.  Use (1.0–1.4r) for the tight
+    halo immediately outside the particle edge.
+    """
+    ny, nx = image.shape
+    img_std = float(np.std(image))
+    if img_std <= 0:
+        return 0.0
+
+    ar = r_outer * radius
+    ax0 = max(0, int(cx - ar) - 1)
+    ax1 = min(nx, int(cx + ar) + 2)
+    ay0 = max(0, int(cy - ar) - 1)
+    ay1 = min(ny, int(cy + ar) + 2)
+
+    ayy, axx = np.mgrid[ay0:ay1, ax0:ax1]
+    adist_sq = (axx - cx) ** 2 + (ayy - cy) ** 2
+
+    circle_mask = adist_sq <= radius * radius
+    if circle_mask.sum() == 0:
+        return 0.0
+    interior_mode = _histogram_mode(image[ay0:ay1, ax0:ax1][circle_mask])
+
+    ring_mask = (adist_sq > (r_inner * radius) ** 2) & (adist_sq <= ar * ar)
+    if ring_mask.sum() == 0:
+        return 0.0
+    ring_mode = _histogram_mode(image[ay0:ay1, ax0:ax1][ring_mask])
+
+    return (ring_mode - interior_mode) / img_std
+
+
+def _filter_pass2_by_mode_contrast(
+    cleaned: np.ndarray,
+    original: np.ndarray,
+    picks: np.ndarray,
+    min_contrast_closed: float = 3.5,
+    min_halo_contrast: float = 1.0,
+) -> np.ndarray:
+    """Remove pass-2 false positives using mode-based contrast on both images.
+
+    A pick is kept only if it passes BOTH:
+      1. Wide-annulus contrast on closed image >= min_contrast_closed
+         (large particle = dark island in bright closed-image background)
+      2. Tight-halo contrast on original image >= min_halo_contrast
+         The halo ring (1.0–1.4r) just outside the particle edge is very
+         bright for real large particles (lipid shell + solvent), while
+         false positives in inter-particle gaps are surrounded by grey.
+    """
+    keep = np.ones(len(picks), dtype=bool)
+
+    for i, pick in enumerate(picks):
+        cx, cy = float(pick[_X]), float(pick[_Y])
+        radius = float(pick[_SIGMA]) * _SIGMA_TO_DIAM / 2.0
+
+        lc_closed = _mode_contrast(cleaned, cx, cy, radius,
+                                   r_inner=1.5, r_outer=2.5)
+        if lc_closed < min_contrast_closed:
+            keep[i] = False
+            continue
+
+        halo = _mode_contrast(original, cx, cy, radius,
+                              r_inner=1.0, r_outer=1.4)
+        if halo < min_halo_contrast:
+            keep[i] = False
+
+    return picks[keep]
 
 
 def _filter_by_pixel_stats(
