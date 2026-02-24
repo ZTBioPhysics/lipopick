@@ -68,15 +68,17 @@ def _add_pick_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--annulus-width-fraction", type=float, default=0.5,
                         help="Annulus width as fraction of template radius")
     parser.add_argument("--pass2", action="store_true",
-                        help="Enable morphological-closing two-pass detection")
+                        help="Enable morphological-closing two-pass (CC-based) detection")
     parser.add_argument("--pass2-dmin", type=float, default=None,
-                        help="Min diameter for pass 2 (default: 2 * closing_radius)")
+                        help="Min diameter for pass-2 DoG (default: 2 * closing_radius)")
     parser.add_argument("--pass2-dmax", type=float, default=None,
-                        help="Max diameter for pass 2 (default: 2 * dmax)")
-    parser.add_argument("--pass2-threshold-percentile", type=float, default=None,
-                        help="Threshold percentile for pass 2 (default: same as --threshold-percentile)")
+                        help="Max diameter for pass-2 DoG (default: 2 * dmax)")
     parser.add_argument("--closing-radius", type=int, default=None,
                         help="Morphological closing SE radius in px (default: dmin)")
+    parser.add_argument("--pass2-cc-thresh-frac", type=float, default=0.6,
+                        help="DoG threshold = frac * max for CC detection in pass 2 (default: 0.6)")
+    parser.add_argument("--pass2-cc-min-dark-frac", type=float, default=0.65,
+                        help="Interior darkness gate for pass-2 CC filter (default: 0.65)")
     parser.add_argument("--quiet", "-q", action="store_true",
                         help="Suppress progress output")
 
@@ -109,8 +111,9 @@ def _cfg_from_args(args: argparse.Namespace):
         pass2=args.pass2,
         pass2_dmin=args.pass2_dmin,
         pass2_dmax=args.pass2_dmax,
-        pass2_threshold_percentile=args.pass2_threshold_percentile,
         closing_radius=args.closing_radius,
+        pass2_cc_thresh_frac=args.pass2_cc_thresh_frac,
+        pass2_cc_min_dark_frac=args.pass2_cc_min_dark_frac,
     )
 
 

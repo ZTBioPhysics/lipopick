@@ -140,13 +140,14 @@ class PickerConfig:
     template_min_separation: int = 5        # local maxima neighborhood size
 
     # ------------------------------------------------------------------ #
-    # Pass 2 (morphological closing + re-detect)
+    # Pass 2 (morphological closing + CC-based re-detect)
     # ------------------------------------------------------------------ #
-    pass2: bool = False                                  # enable two-pass detection
-    pass2_dmin: Optional[float] = None                   # default: 2 * closing_radius
-    pass2_dmax: Optional[float] = None                   # default: 2.0 * dmax
-    pass2_threshold_percentile: Optional[float] = None   # default: threshold_percentile
-    closing_radius: Optional[int] = None                 # SE radius in px (default: dmin)
+    pass2: bool = False                        # enable two-pass detection
+    pass2_dmin: Optional[float] = None         # default: 2 * closing_radius
+    pass2_dmax: Optional[float] = None         # default: 2.0 * dmax
+    closing_radius: Optional[int] = None       # SE radius in px (default: dmin)
+    pass2_cc_thresh_frac: float = 0.6          # DoG threshold = frac * max for CC detection
+    pass2_cc_min_dark_frac: float = 0.65       # interior darkness gate (fraction < image mean)
 
     def __post_init__(self):
         if self.dmin <= 0 or self.dmax <= 0:
@@ -180,10 +181,12 @@ class PickerConfig:
                 self.pass2_dmin = float(2 * self.closing_radius)
             if self.pass2_dmax is None:
                 self.pass2_dmax = 2.0 * self.dmax
-            if self.pass2_threshold_percentile is None:
-                self.pass2_threshold_percentile = self.threshold_percentile
             if self.pass2_dmin >= self.pass2_dmax:
                 raise ValueError("pass2_dmin must be less than pass2_dmax")
+            if not (0 < self.pass2_cc_thresh_frac < 1):
+                raise ValueError("pass2_cc_thresh_frac must be in (0, 1)")
+            if not (0 < self.pass2_cc_min_dark_frac <= 1):
+                raise ValueError("pass2_cc_min_dark_frac must be in (0, 1]")
 
         if self.pyramid_levels is None:
             self.pyramid_levels = _auto_pyramid_levels(self.dmin, self.dmax)

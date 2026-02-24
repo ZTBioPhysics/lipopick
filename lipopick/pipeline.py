@@ -8,7 +8,9 @@ Stages per micrograph (pick_micrograph):
   4. Optional radial refinement
   5. Post-refine diameter filter (clip to [dmin, dmax])
   6. Pixel-statistics filter (bright interior / ambiguous / contaminant)
-  7. Post-refinement overlap filter (greedy, score-ordered)
+  7. Anti-cluster filter (reject large picks containing ≥2 smaller picks)
+  8. Post-refinement overlap filter (greedy, score-ordered)
+  9. Pass-2 morphological closing + CC re-detect (optional)
 """
 from __future__ import annotations
 
@@ -225,50 +227,22 @@ def pick_micrograph(
     return picks
 
 
-def _make_pass2_config(cfg: PickerConfig) -> PickerConfig:
-    """Build a PickerConfig for pass-2 detection on the closed image."""
-    from .config import _auto_pyramid_levels
-
-    return PickerConfig(
-        dmin=cfg.pass2_dmin,
-        dmax=cfg.pass2_dmax,
-        threshold_percentile=cfg.pass2_threshold_percentile,
-        nms_beta=cfg.nms_beta,
-        refine=False,         # no refinement for pass-2 — small particles inside
-                              # the large faint targets dominate the radial gradient,
-                              # causing refinement to shrink diameters drastically;
-                              # the DoG scale estimate from the closed image is used
-        pixel_size=cfg.pixel_size,
-        dog_k=cfg.dog_k,
-        dog_min_steps=cfg.dog_min_steps,
-        min_score=cfg.min_score,
-        edge_fraction=cfg.edge_fraction,
-        max_local_contrast=cfg.max_local_contrast,
-        max_overlap=0.0,  # overlap filter runs on merged set, not pass-2 alone
-        pass2=False,      # no recursive pass-2
-    )
-
-
 def _run_pass2(
     image: np.ndarray,
     picks_pass1: np.ndarray,
     cfg: PickerConfig,
 ) -> np.ndarray:
     """
-    Two-pass detection via morphological closing.
+    Two-pass detection via morphological closing + connected-component analysis.
 
-    1. Clean the image: grey closing removes dark features smaller than the SE.
-    2. Detect on the cleaned image at large scales (pass-2 config).
-    3. Pre-NMS size filter to remove residual small features near the
-       closing boundary.
-    4. Edge exclusion + NMS.
-    5. Merge pass-1 + pass-2 and deduplicate with NMS.
-
-    No pixel-stats or anti-cluster filtering — those filters were designed
-    for pass-1 (small dark particles on smooth background) and reject the
-    large faint particles pass-2 is meant to find.  Radial refinement runs
-    on the closed image to correct the DoG diameter overestimate (the
-    closing broadens features, inflating the DoG scale).
+    1. Apply grey closing to remove dark features smaller than the SE.
+    2. Compute DoG on the closed image at pass-2 scale (ds=2).
+    3. Max-project the DoG stack and apply a light Gaussian lowpass.
+    4. Threshold at pass2_cc_thresh_frac × max → binary image.
+    5. Label connected components; compute weighted centroid and area per CC.
+    6. Filter: min size (50 px full-res), border exclusion (30 px), and
+       interior darkness on the *original* image (dark_frac >= pass2_cc_min_dark_frac).
+    7. Merge pass-1 + pass-2 picks; deduplicate with NMS.
 
     Parameters
     ----------
@@ -281,156 +255,101 @@ def _run_pass2(
     merged : ndarray, shape (M, 5), float32
     """
     from .morph import morphological_clean
+    from scipy.ndimage import label, find_objects, gaussian_filter as _gf
 
     # 1. Clean image
     cleaned = morphological_clean(image, se_radius=cfg.closing_radius)
+    ny, nx = image.shape
+    img_mean = float(np.mean(image))
 
-    # 2. Detect on cleaned image
-    cfg2 = _make_pass2_config(cfg)
-    candidates = _detect_dog(cleaned, cfg2)
-    if candidates.shape[0] == 0:
-        return picks_pass1
-
-    # 3. Pre-NMS size filter: closing partially attenuates features near the
-    #    removal boundary, leaving residual peaks that would suppress the
-    #    large targets in NMS.  Remove candidates below 2.5 * closing_radius.
-    min_pass2_diam = max(cfg2.dmin, 2.5 * cfg.closing_radius)
-    cand_diams = candidates[:, _SIGMA] * _SIGMA_TO_DIAM
-    candidates = candidates[cand_diams >= min_pass2_diam]
-    if candidates.shape[0] == 0:
-        return picks_pass1
-
-    # 4. Edge exclusion + NMS
-    ny, nx = cleaned.shape
-    border = cfg2.dmax / 2.0 * cfg2.edge_fraction
-    edge_mask = (
-        (candidates[:, _X] < border) |
-        (candidates[:, _X] > nx - 1 - border) |
-        (candidates[:, _Y] < border) |
-        (candidates[:, _Y] > ny - 1 - border)
+    # 2. DoG on closed image at pass-2 scale (ds=2, one level)
+    _DS = 2
+    level_img = build_pyramid_level(cleaned, _DS)
+    sigma_min, _, n_steps = sigma_range_for_level(
+        cfg.pass2_dmin, cfg.pass2_dmax, _DS, cfg.dog_k, cfg.dog_min_steps
     )
-    picks2 = size_aware_nms(candidates, beta=cfg2.nms_beta, edge_mask=edge_mask)
+    dog_stack, _ = compute_dog_stack(level_img, sigma_min, n_steps, k=cfg.dog_k)
 
-    if picks2.shape[0] == 0:
+    # 3. Max-projection + light lowpass (sigma=3 at ds=2 scale)
+    dog_proj = _gf(dog_stack.max(axis=0).astype(np.float32), sigma=3.0)
+    del dog_stack
+
+    # 4. Threshold + label
+    thresh = cfg.pass2_cc_thresh_frac * float(dog_proj.max())
+    labeled, n_cc = label((dog_proj > thresh).astype(np.uint8))
+    if n_cc == 0:
         return picks_pass1
 
-    # 5. Radial refinement on the CLOSED image to correct the DoG diameter
-    #    overestimate.  The closed image is smooth (small particles removed),
-    #    so refinement finds the true edge of the large particle without
-    #    interference from small neighbours.
-    if cfg.refine and picks2.shape[0] > 0:
-        from .refine import refine_picks
-        picks2 = refine_picks(
-            cleaned, picks2, margin=0.5,
-            r_min=cfg2.dmin / 2.0, r_max=cfg2.dmax / 2.0,
-        )
-        # Post-refine diameter filter
-        diameters = picks2[:, _SIGMA] * _SIGMA_TO_DIAM
-        keep = (diameters >= cfg2.dmin) & (diameters <= cfg2.dmax)
-        picks2 = picks2[keep]
+    slices = find_objects(labeled)
 
-    # 6. Mode-based local-contrast filter on the CLOSED image.
-    #    True large particles are dark islands in a uniformly bright field
-    #    (annulus mode = bright), while false positives (inter-particle gaps)
-    #    sit in uniformly grey regions (annulus mode ≈ interior mode).
-    #    Using the mode (histogram peak) instead of the mean avoids being
-    #    pulled by outlier pixels.
-    if picks2.shape[0] > 0:
-        picks2 = _filter_pass2_by_mode_contrast(cleaned, image, picks2)
+    # 5–6. Extract CC stats and apply filters
+    _MIN_CC_PIX = 20    # ignore tiny noise blobs
+    _MIN_D_EST  = 50    # min full-res diameter from CC area
+    # Border exclusion here is a fixed pixel count, intentionally different from
+    # the dmax-based exclusion in pick_micrograph.  The CC centroid is unreliable
+    # when the CC is truncated by the image edge; 30 px is enough to prevent that
+    # without excluding real large particles near the border.
+    _BORDER_PX  = 30    # min distance from image edge (full-res px)
 
-    if picks2.shape[0] == 0:
+    picks2_rows = []
+    for i, slc in enumerate(slices):
+        if slc is None:
+            continue
+        cc_id = i + 1
+        sub_lab = labeled[slc]
+        sub_dog = dog_proj[slc]
+        mask = sub_lab == cc_id
+        n_pix = int(mask.sum())
+        if n_pix < _MIN_CC_PIX:
+            continue
+
+        peak = float(sub_dog[mask].max())
+        weights = sub_dog * mask
+        total_w = float(weights.sum())
+        yy_ds, xx_ds = np.mgrid[slc[0], slc[1]]
+        cx = float((weights * xx_ds).sum() / total_w) * _DS
+        cy = float((weights * yy_ds).sum() / total_w) * _DS
+        d_est = 2.0 * np.sqrt(n_pix / np.pi) * _DS
+
+        # Size and border exclusion
+        if d_est < _MIN_D_EST:
+            continue
+        if cx < _BORDER_PX or cx > nx - _BORDER_PX:
+            continue
+        if cy < _BORDER_PX or cy > ny - _BORDER_PX:
+            continue
+
+        # Interior darkness on original image
+        radius = d_est / 2.0
+        r_int = int(np.ceil(radius))
+        x0 = max(0, int(cx) - r_int)
+        x1 = min(nx, int(cx) + r_int + 1)
+        y0 = max(0, int(cy) - r_int)
+        y1 = min(ny, int(cy) + r_int + 1)
+        yy_f, xx_f = np.ogrid[y0:y1, x0:x1]
+        circ = (xx_f - cx) ** 2 + (yy_f - cy) ** 2 <= radius ** 2
+        interior = image[y0:y1, x0:x1][circ]
+        if interior.size == 0:
+            continue
+        dark_frac = float(np.mean(interior < img_mean))
+        if dark_frac < cfg.pass2_cc_min_dark_frac:
+            continue
+
+        # Convert to picks row: [x, y, sigma, score, ds]
+        sigma = d_est / _SIGMA_TO_DIAM
+        picks2_rows.append([cx, cy, sigma, peak, float(_DS)])
+
+    if not picks2_rows:
         return picks_pass1
 
-    # 7. Merge pass-1 + pass-2, deduplicate with NMS
+    picks2 = np.array(picks2_rows, dtype=np.float32)
+
+    # 7. Merge pass-1 + pass-2; deduplicate with NMS
     merged = np.vstack([picks_pass1, picks2])
     merged = size_aware_nms(merged, beta=cfg.nms_beta)
-
     return merged
 
 
-def _histogram_mode(pixels: np.ndarray, n_bins: int = 64) -> float:
-    """Return the mode (most common value) of *pixels* via histogram peak."""
-    counts, edges = np.histogram(pixels, bins=n_bins)
-    peak_bin = int(np.argmax(counts))
-    return float(0.5 * (edges[peak_bin] + edges[peak_bin + 1]))
-
-
-def _mode_contrast(
-    image: np.ndarray,
-    cx: float,
-    cy: float,
-    radius: float,
-    r_inner: float = 1.5,
-    r_outer: float = 2.5,
-) -> float:
-    """Compute (outer_ring_mode - interior_mode) / image_std for one pick.
-
-    r_inner and r_outer are fractions of radius defining the reference ring.
-    Default (1.5–2.5r) gives a wide annulus.  Use (1.0–1.4r) for the tight
-    halo immediately outside the particle edge.
-    """
-    ny, nx = image.shape
-    img_std = float(np.std(image))
-    if img_std <= 0:
-        return 0.0
-
-    ar = r_outer * radius
-    ax0 = max(0, int(cx - ar) - 1)
-    ax1 = min(nx, int(cx + ar) + 2)
-    ay0 = max(0, int(cy - ar) - 1)
-    ay1 = min(ny, int(cy + ar) + 2)
-
-    ayy, axx = np.mgrid[ay0:ay1, ax0:ax1]
-    adist_sq = (axx - cx) ** 2 + (ayy - cy) ** 2
-
-    circle_mask = adist_sq <= radius * radius
-    if circle_mask.sum() == 0:
-        return 0.0
-    interior_mode = _histogram_mode(image[ay0:ay1, ax0:ax1][circle_mask])
-
-    ring_mask = (adist_sq > (r_inner * radius) ** 2) & (adist_sq <= ar * ar)
-    if ring_mask.sum() == 0:
-        return 0.0
-    ring_mode = _histogram_mode(image[ay0:ay1, ax0:ax1][ring_mask])
-
-    return (ring_mode - interior_mode) / img_std
-
-
-def _filter_pass2_by_mode_contrast(
-    cleaned: np.ndarray,
-    original: np.ndarray,
-    picks: np.ndarray,
-    min_contrast_closed: float = 3.5,
-    min_halo_contrast: float = 1.0,
-) -> np.ndarray:
-    """Remove pass-2 false positives using mode-based contrast on both images.
-
-    A pick is kept only if it passes BOTH:
-      1. Wide-annulus contrast on closed image >= min_contrast_closed
-         (large particle = dark island in bright closed-image background)
-      2. Tight-halo contrast on original image >= min_halo_contrast
-         The halo ring (1.0–1.4r) just outside the particle edge is very
-         bright for real large particles (lipid shell + solvent), while
-         false positives in inter-particle gaps are surrounded by grey.
-    """
-    keep = np.ones(len(picks), dtype=bool)
-
-    for i, pick in enumerate(picks):
-        cx, cy = float(pick[_X]), float(pick[_Y])
-        radius = float(pick[_SIGMA]) * _SIGMA_TO_DIAM / 2.0
-
-        lc_closed = _mode_contrast(cleaned, cx, cy, radius,
-                                   r_inner=1.5, r_outer=2.5)
-        if lc_closed < min_contrast_closed:
-            keep[i] = False
-            continue
-
-        halo = _mode_contrast(original, cx, cy, radius,
-                              r_inner=1.0, r_outer=1.4)
-        if halo < min_halo_contrast:
-            keep[i] = False
-
-    return picks[keep]
 
 
 def _filter_by_pixel_stats(
@@ -454,6 +373,12 @@ def _filter_by_pixel_stats(
     dark_fraction: fraction of interior pixels below the global image mean.
     local_contrast: (annulus_mean - interior_mean) / image_std, where the
     annulus covers 1.5r to 2.5r around the pick center.
+
+    The thresholds min_dark_fraction=0.3, ambiguous_dark_fraction=0.6, and
+    min_local_contrast=0.2 are empirically tuned on LDLp data and are
+    intentionally not user-configurable.  Only max_local_contrast is exposed
+    because it controls contaminant rejection aggressiveness, which is
+    dataset-dependent.
     """
     ny, nx = image.shape
     img_mean = float(np.mean(image))
@@ -526,8 +451,8 @@ def _filter_cluster_picks(
 
     A real large particle has a smooth interior — it would not contain
     multiple smaller detected particles.  Large picks that do are almost
-    certainly cluster false positives (a group of small particles that
-    correlated with a large template).
+    certainly cluster false positives (a group of small particles detected
+    as a single large feature, regardless of detection method).
 
     For each pick, count how many *smaller* picks have their centre inside
     this pick's circle.  If count >= min_interior_picks, reject it.
@@ -731,7 +656,8 @@ def process_micrograph(
     -------
     result : dict
         {"path": str, "n_picks": int, "time_s": float, "picks_csv": str,
-         "picks": ndarray shape (N,5)}
+         "picks": ndarray shape (N,5), "image_std": float,
+         "dynamic_range": float, "image_shape": (ny, nx)}
     """
     mic_path = Path(mic_path)
     outdir = Path(outdir)

@@ -36,12 +36,13 @@ DETECTION_METHOD = "dog"
 CORRELATION_THRESHOLD = 0.15   # NCC threshold for template matching [0, 1]
 TEMPLATE_RADIUS_STEP = 3.0    # px step between template radii
 
-# Two-pass detection (morphological closing)
+# Two-pass detection (morphological closing + CC-based re-detect)
 PASS2 = False                  # enable morphological-closing two-pass detection
 PASS2_DMIN = None              # default: 2 * CLOSING_RADIUS
 PASS2_DMAX = None              # default: 2 * DMAX
-PASS2_THRESHOLD_PERCENTILE = None  # default: same as THRESHOLD_PERCENTILE
 CLOSING_RADIUS = None          # SE radius in px (default: DMIN)
+PASS2_CC_THRESH_FRAC = 0.6    # DoG threshold = frac * max for CC detection
+PASS2_CC_MIN_DARK_FRAC = 0.65 # interior darkness gate (fraction < image mean)
 
 WRITE_CSV = True
 WRITE_STAR = False
@@ -90,15 +91,17 @@ def parse_args(argv=None):
     p.add_argument("--template-radius-step", type=float, default=None,
                    help="Pixel step between template radii")
     p.add_argument("--pass2", action="store_true", default=None,
-                   help="Enable morphological-closing two-pass detection")
+                   help="Enable morphological-closing two-pass (CC-based) detection")
     p.add_argument("--pass2-dmin", type=float, default=None,
-                   help="Min diameter for pass 2")
+                   help="Min diameter for pass-2 DoG")
     p.add_argument("--pass2-dmax", type=float, default=None,
-                   help="Max diameter for pass 2")
-    p.add_argument("--pass2-threshold-percentile", type=float, default=None,
-                   help="Threshold percentile for pass 2")
+                   help="Max diameter for pass-2 DoG")
     p.add_argument("--closing-radius", type=int, default=None,
                    help="Morphological closing SE radius in px")
+    p.add_argument("--pass2-cc-thresh-frac", type=float, default=None,
+                   help="DoG threshold = frac * max for CC detection")
+    p.add_argument("--pass2-cc-min-dark-frac", type=float, default=None,
+                   help="Interior darkness gate for pass-2 CC filter")
     p.add_argument("--no-overlay", action="store_true",
                    help="Skip overlay figure")
     p.add_argument("--no-histogram", action="store_true",
@@ -131,8 +134,9 @@ def main(argv=None):
     pass2 = args.pass2 if args.pass2 is not None else PASS2
     pass2_dmin = args.pass2_dmin if args.pass2_dmin is not None else PASS2_DMIN
     pass2_dmax = args.pass2_dmax if args.pass2_dmax is not None else PASS2_DMAX
-    pass2_thresh = args.pass2_threshold_percentile if args.pass2_threshold_percentile is not None else PASS2_THRESHOLD_PERCENTILE
     closing_radius = args.closing_radius if args.closing_radius is not None else CLOSING_RADIUS
+    cc_thresh = args.pass2_cc_thresh_frac if args.pass2_cc_thresh_frac is not None else PASS2_CC_THRESH_FRAC
+    cc_dark = args.pass2_cc_min_dark_frac if args.pass2_cc_min_dark_frac is not None else PASS2_CC_MIN_DARK_FRAC
     write_star = args.star if args.star is not None else WRITE_STAR
     write_overlay = not args.no_overlay if args.no_overlay else WRITE_OVERLAY
     write_hist = not args.no_histogram if args.no_histogram else WRITE_HISTOGRAM
@@ -169,8 +173,9 @@ def main(argv=None):
         pass2=pass2,
         pass2_dmin=pass2_dmin,
         pass2_dmax=pass2_dmax,
-        pass2_threshold_percentile=pass2_thresh,
         closing_radius=closing_radius,
+        pass2_cc_thresh_frac=cc_thresh,
+        pass2_cc_min_dark_frac=cc_dark,
     )
 
     if verbose:

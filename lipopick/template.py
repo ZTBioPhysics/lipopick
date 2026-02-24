@@ -1,14 +1,18 @@
 """
 Dark-disc template matching detector for cryo-EM lipoprotein micrographs.
 
-Complements the DoG detector for large, faint (lipid-rich) particles that DoG
-cannot detect.  Uses FFT-based normalized cross-correlation (NCC) with a
-dark-disc + bright-annulus template at multiple radii.
+Uses FFT-based normalized cross-correlation (NCC) with a dark-disc +
+bright-annulus template at multiple radii.  Available as an alternative
+or supplement to DoG detection via ``--method template`` or ``--method combined``.
 
-Key advantage: NCC integrates signal over the full disc area, so even faint
-particles accumulate detectable correlation.  The bright annulus naturally
-distinguishes real particles from clusters of small particles (which have
-bright gaps in the interior).
+Key property: NCC integrates signal over the full disc area, so even faint
+particles can accumulate detectable correlation.
+
+Known limitation: clusters of small dark particles produce NCC scores
+comparable to real large particles — the bright annulus does not reliably
+distinguish the two on dense LDLp micrographs.  The anti-cluster filter
+in pipeline.py catches many of these, but standalone template matching
+performs equivalently to DoG on real data.
 """
 from __future__ import annotations
 

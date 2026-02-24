@@ -135,7 +135,7 @@ class TestTwoPassPipeline:
             pass2=True,
             closing_radius=80,      # removes features < 160px
             pass2_dmin=250.0, pass2_dmax=500.0,
-            pass2_threshold_percentile=50.0,
+            pass2_cc_thresh_frac=0.3,  # low threshold for synthetic blobs
         )
 
         picks = pick_micrograph(image, cfg)
@@ -169,7 +169,7 @@ class TestTwoPassPipeline:
             pass2=True,
             closing_radius=50,     # small SE — won't remove d=200 blob
             pass2_dmin=100.0, pass2_dmax=300.0,
-            pass2_threshold_percentile=50.0,
+            pass2_cc_thresh_frac=0.3,  # low threshold for synthetic blobs
         )
 
         picks = pick_micrograph(image, cfg)
@@ -188,6 +188,7 @@ class TestTwoPassPipeline:
             dmin=150.0, dmax=500.0,
             threshold_percentile=50.0, min_score=0.02,
             nms_beta=0.8, refine=False,
+            max_local_contrast=0.0,  # disable for synthetic blobs
         )
         assert cfg.pass2 is False
 
@@ -227,7 +228,8 @@ class TestPass2Config:
         assert cfg.closing_radius == 50           # int(dmin)
         assert cfg.pass2_dmin == 100.0             # 2 * closing_radius
         assert cfg.pass2_dmax == 300.0             # 2.0 * dmax
-        assert cfg.pass2_threshold_percentile == cfg.threshold_percentile
+        assert cfg.pass2_cc_thresh_frac == 0.6
+        assert cfg.pass2_cc_min_dark_frac == 0.65
 
     def test_custom_values(self):
         from lipopick import PickerConfig
@@ -238,12 +240,14 @@ class TestPass2Config:
             closing_radius=60,
             pass2_dmin=120.0,
             pass2_dmax=400.0,
-            pass2_threshold_percentile=50.0,
+            pass2_cc_thresh_frac=0.5,
+            pass2_cc_min_dark_frac=0.70,
         )
         assert cfg.closing_radius == 60
         assert cfg.pass2_dmin == 120.0
         assert cfg.pass2_dmax == 400.0
-        assert cfg.pass2_threshold_percentile == 50.0
+        assert cfg.pass2_cc_thresh_frac == 0.5
+        assert cfg.pass2_cc_min_dark_frac == 0.70
 
     def test_invalid_pass2_range(self):
         from lipopick import PickerConfig

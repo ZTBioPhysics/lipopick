@@ -31,6 +31,7 @@ def _make_cfg(**kwargs):
     defaults = dict(
         write_csv=False, write_overlay=False,
         write_histogram=False, write_extraction_plan=False,
+        max_local_contrast=0.0,  # disable for synthetic blobs (unrealistic contrast)
     )
     defaults.update(kwargs)
     return PickerConfig(**defaults)

@@ -1,9 +1,15 @@
 """
 Optional radial edge refinement.
 
-For each accepted pick, compute a 1-D radial intensity profile
-and find the strongest inward gradient within ±25% of the initial
-radius estimate. This can sharpen the diameter estimate.
+For each accepted pick, compute a 1-D radial intensity profile averaged
+over many angles, then find the edge as the radius with the strongest
+absolute gradient.
+
+Two search modes:
+  - Default: ±25% of the initial DoG radius estimate (``margin`` parameter).
+  - Absolute: [r_min, r_max] bounds regardless of initial estimate.  The
+    pipeline always uses absolute mode (r_min=dmin/2, r_max=dmax/2) because
+    DoG systematically underestimates hard-edged particle radii.
 
 Uses only numpy/scipy — no scikit-image required.
 """

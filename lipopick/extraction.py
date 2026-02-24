@@ -2,7 +2,7 @@
 Extraction plan generator.
 
 Given a set of particle diameter estimates, suggests:
-  - N size bins (via histogram peak detection or quantiles)
+  - N size bins (equal-count quantiles or equal-width)
   - Recommended box size for each bin (next power of 2 above 1.5 × d_max_in_bin)
   - Pick counts per bin
 
