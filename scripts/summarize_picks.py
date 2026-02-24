@@ -30,8 +30,6 @@ import numpy as np
 # ============================================================
 OUTDIR       = "/path/to/outputs"   # directory with *_picks.csv files
 PIXEL_SIZE   = 3.0341               # Å/px (for nm labels on histogram)
-DMIN         = 50.0                 # px  (histogram x-axis lower bound)
-DMAX         = 150.0                # px  (histogram x-axis upper bound)
 IMAGE_SHAPE  = (1296, 1296)         # (ny, nx) — used for pick_density QC metric
 FIGURE_DPI   = 300
 FIGURE_FMTS  = ("png", "svg")
@@ -49,10 +47,6 @@ def parse_args(argv=None):
                    help="Directory containing *_picks.csv files")
     p.add_argument("--pixel-size", type=float, default=None,
                    help="Pixel size in Å/px")
-    p.add_argument("--dmin", type=float, default=None,
-                   help="Min particle diameter in px (histogram axis)")
-    p.add_argument("--dmax", type=float, default=None,
-                   help="Max particle diameter in px (histogram axis)")
     p.add_argument("--image-shape", type=int, nargs=2, default=None,
                    metavar=("NY", "NX"),
                    help="Image dimensions in pixels (for pick-density QC)")
@@ -122,7 +116,7 @@ def _read_csv(path: Path):
     return rows
 
 
-def _make_summary_figure(results, outdir, pixel_size, dmin, dmax, dpi, fmts):
+def _make_summary_figure(results, outdir, pixel_size, dpi, fmts):
     """Two-panel figure: diameter histogram + per-micrograph pick count bar chart."""
     import matplotlib
     matplotlib.use("Agg")
@@ -130,8 +124,6 @@ def _make_summary_figure(results, outdir, pixel_size, dmin, dmax, dpi, fmts):
     from lipopick.viz import save_figure
 
     nm = pixel_size / 10.0
-    dmin_nm = dmin * nm
-    dmax_nm = dmax * nm
 
     # Collect diameters
     good = [r for r in results if r["qc_pass"]]
@@ -226,8 +218,6 @@ def main(argv=None):
     # Resolve params (CLI overrides editable constants)
     outdir      = Path(args.outdir)      if args.outdir       else Path(OUTDIR)
     pixel_size  = args.pixel_size        if args.pixel_size   else PIXEL_SIZE
-    dmin        = args.dmin              if args.dmin         else DMIN
-    dmax        = args.dmax              if args.dmax         else DMAX
     image_shape = tuple(args.image_shape) if args.image_shape else IMAGE_SHAPE
     dpi         = args.dpi               if args.dpi          else FIGURE_DPI
 
@@ -285,7 +275,7 @@ def main(argv=None):
     print(f"Wrote: {qc_path}")
 
     # ── Summary figure ────────────────────────────────────────────────
-    _make_summary_figure(results, outdir, pixel_size, dmin, dmax, dpi, FIGURE_FMTS)
+    _make_summary_figure(results, outdir, pixel_size, dpi, FIGURE_FMTS)
     fig_path = outdir / "partial_summary.png"
     print(f"Wrote: {fig_path}")
 
