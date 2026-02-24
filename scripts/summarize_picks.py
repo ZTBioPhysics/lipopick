@@ -213,6 +213,7 @@ def _make_summary_figure(results, outdir, pixel_size, dpi, fmts):
 
 
 def main(argv=None):
+    global IMAGE_SHAPE
     args = parse_args(argv)
 
     # Resolve params (CLI overrides editable constants)
@@ -222,7 +223,6 @@ def main(argv=None):
     dpi         = args.dpi               if args.dpi          else FIGURE_DPI
 
     # Patch module-level constant so _load_per_mic_csvs uses the right shape
-    global IMAGE_SHAPE
     IMAGE_SHAPE = image_shape
 
     # Make repo importable when run as a script
