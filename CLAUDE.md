@@ -6,11 +6,10 @@ lipoproteins (HDL/LDL/VLDL). Detects particles, returning one pick per particle 
 diameter estimate. No training data required — purely classical.
 
 ## Current Status
-CC-based two-pass detection implemented and validated. All 77 unit tests pass. Pass-2 uses
-morphological closing + connected-component analysis (not NMS-based) with a dark-fraction
-interior filter. Validated on 4 known-TP micrographs: 9/9 TPs detected with 0 false
-positives. Logic review of all core algorithm files completed — comments/docstrings corrected,
-no behavioral changes. Ready to run on HPC cluster with `--pass2` flag.
+CC-based two-pass detection implemented and validated. All 77 unit tests pass. `refine_picks`
+vectorized (10× speedup: 141 ms → 14 ms/image). 12k-micrograph MPI run in progress on
+Hellbender cluster (without refine vectorization — committed after launch). Logic review of
+all core algorithm files completed. Next: evaluate pass-2 results from cluster run.
 
 ## Architecture
 - `lipopick/config.py` — PickerConfig dataclass (all tunable parameters)
