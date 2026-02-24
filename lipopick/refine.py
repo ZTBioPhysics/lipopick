@@ -95,19 +95,16 @@ def refine_picks(
         r_hi = min(r_hi, max(r_lo + 1, max_r))
 
         radii = np.linspace(r_lo, r_hi, n_radii)
-        profile = np.zeros(n_radii, dtype=np.float32)
 
-        # Average radial profile across all angles
-        for r_idx, r in enumerate(radii):
-            sample_x = x0 + r * cos_a
-            sample_y = y0 + r * sin_a
-
-            sample_x = np.clip(sample_x, 0, nx - 1)
-            sample_y = np.clip(sample_y, 0, ny - 1)
-
-            coords = np.array([sample_y, sample_x])
-            vals = map_coordinates(image, coords, order=1, mode="nearest")
-            profile[r_idx] = vals.mean()
+        # Build all (n_radii × n_angles) sample coordinates in one shot and
+        # call map_coordinates once instead of n_radii times.  The result is
+        # identical to the per-radius loop but avoids n_radii Python-level
+        # function calls and array allocations per pick.
+        samp_x = np.clip(x0 + radii[:, None] * cos_a, 0.0, nx - 1)  # (n_radii, n_angles)
+        samp_y = np.clip(y0 + radii[:, None] * sin_a, 0.0, ny - 1)  # (n_radii, n_angles)
+        coords = np.array([samp_y.ravel(), samp_x.ravel()])          # (2, n_radii*n_angles)
+        vals = map_coordinates(image, coords, order=1, mode="nearest")
+        profile = vals.reshape(n_radii, n_angles).mean(axis=1).astype(np.float32)
 
         # Gradient of radial profile.
         # For dark particles on bright background, the edge has the steepest
