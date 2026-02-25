@@ -255,6 +255,9 @@ def bin_main(argv=None):
                    help="Min diameter in px (for histogram axis)")
     p.add_argument("--dmax", type=float, default=100.0,
                    help="Max diameter in px (for histogram axis)")
+    p.add_argument("--min-bin-count", type=int, default=0,
+                   help="Merge tail bins until the last bin has at least this many "
+                        "particles (0 = disabled)")
     args = p.parse_args(argv)
 
     # Lazy imports so --help is fast
@@ -313,7 +316,8 @@ def bin_main(argv=None):
     diameters = np.array([p["diameter_px"] for p in all_picks], dtype=np.float32)
 
     # ── Extraction plan ─────────────────────────────────────────────────
-    plan = make_extraction_plan(diameters, n_bins=args.n_bins, bin_mode=args.bin_mode)
+    plan = make_extraction_plan(diameters, n_bins=args.n_bins, bin_mode=args.bin_mode,
+                                min_bin_count=args.min_bin_count)
     _print_plan(plan, picking_apix, target_apix)
 
     # ── Histogram ───────────────────────────────────────────────────────

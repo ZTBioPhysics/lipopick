@@ -21,6 +21,7 @@ def make_extraction_plan(
     n_bins: int = 3,
     box_padding: float = 1.5,
     bin_mode: str = "quantile",
+    min_bin_count: int = 0,
 ) -> dict:
     """
     Build an extraction plan from particle diameter estimates.
@@ -36,6 +37,10 @@ def make_extraction_plan(
     bin_mode : {"quantile", "equal_width"}
         "quantile" — equal-count bins (default).
         "equal_width" — evenly spaced bins from dmin to dmax.
+    min_bin_count : int
+        If > 0, merge tail bins (from the right) until the last bin has at
+        least this many particles.  Bins are merged pairwise from the right
+        until the condition is met or only one bin remains.
 
     Returns
     -------
@@ -92,6 +97,26 @@ def make_extraction_plan(
             "n_particles": n_in_bin,
             "box_size_px": box_size,
         })
+
+    # Merge tail bins until the last bin meets min_bin_count
+    if min_bin_count > 0:
+        while len(bins) > 1 and bins[-1]["n_particles"] < min_bin_count:
+            last = bins.pop()
+            prev = bins[-1]
+            merged_d_hi  = last["d_hi"]
+            merged_n     = prev["n_particles"] + last["n_particles"]
+            merged_mask  = (diameters >= prev["d_lo"]) & (diameters < merged_d_hi)
+            merged_center = (float(np.median(diameters[merged_mask]))
+                             if merged_n > 0 else (prev["d_lo"] + merged_d_hi) / 2)
+            merged_box   = _next_power_of_2(int(math.ceil(box_padding * merged_d_hi)))
+            bins[-1] = {
+                "bin_id":      prev["bin_id"],
+                "d_lo":        prev["d_lo"],
+                "d_hi":        round(merged_d_hi, 1),
+                "d_center":    round(merged_center, 1),
+                "n_particles": merged_n,
+                "box_size_px": merged_box,
+            }
 
     plan = {
         "n_particles": int(diameters.size),
