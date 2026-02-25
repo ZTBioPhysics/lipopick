@@ -31,7 +31,7 @@ from pathlib import Path
 # ============================================================
 # CONFIGURATION — Edit these for your run (Spyder-friendly)
 # ============================================================
-STAR_DIR        = "/path/to/star_bins"      # output of lipopick-bin
+RESULTS_DIR     = "/path/to/lipopick_outputs"  # same --results-dir as lipopick-bin
 RELION_DIR      = "/path/to/relion_project" # RELION project root
 
 # SBATCH resources — adjust to your cluster
@@ -60,8 +60,9 @@ def parse_args(argv=None):
         description="Generate RELION v5 extraction and 2D class SBATCH scripts",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--star-dir",   type=str, default=None,
-                   help="Directory containing lipopick-bin STAR files and extraction_summary.json")
+    p.add_argument("--results-dir", "-r", type=str, default=None,
+                   help="lipopick-bin results directory (same as lipopick-bin --results-dir); "
+                        "STAR files are read from results_dir/star_bins/")
     p.add_argument("--relion-dir", type=str, default=None,
                    help="RELION project root directory")
     p.add_argument("--account",    type=str, default=None)
@@ -248,9 +249,9 @@ def _write_submit_all(
 def main(argv=None):
     args = parse_args(argv)
 
-    star_dir   = Path(args.star_dir)   if args.star_dir   else Path(STAR_DIR)
+    star_dir   = (Path(args.results_dir) / "star_bins") if args.results_dir else (Path(RESULTS_DIR) / "star_bins")
     relion_dir = Path(args.relion_dir) if args.relion_dir else Path(RELION_DIR)
-    account    = args.account              or ACCOUNT
+    account    = args.account             or ACCOUNT
     ex_part    = args.extract_partition    or EXTRACT_PARTITION
     c2d_part   = args.class2d_partition    or CLASS2D_PARTITION
     ex_cpus    = args.extract_cpus         or EXTRACT_CPUS
