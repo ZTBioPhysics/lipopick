@@ -405,6 +405,7 @@ def bin_main(argv=None):
 # ======================================================================= #
 
 def _print_plan(plan: dict, picking_apix: float, target_apix: float) -> None:
+    from lipopick.extraction import _next_power_of_2
     px_to_nm = picking_apix / 10.0
     scale = picking_apix / target_apix
     rescaled = (target_apix != picking_apix)
